@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-fallback-proxy",
+  "name": "cc-litellm",
   "owner": {
     "name": "your-username"
   },
@@ -9,7 +9,7 @@
   },
   "plugins": [
     {
-      "name": "claude-code-fallback-proxy",
+      "name": "cc-litellm",
       "source": "./",
       "description": "Automatically switches Claude Code to a LiteLLM proxy (Azure AI) on billing_error, then notifies you via macOS notification."
     }
