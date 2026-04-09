@@ -31,4 +31,4 @@ with open(path, "w") as f:
 EOF
 
 # macOS notification
-osascript -e 'display notification "Anthropic credits exhausted — switched to Azure AI. Restart Claude Code." with title "Claude Code — Out of Credits" sound name "Basso"'
+osascript -e 'display notification "Usage limit reached — switched to Azure AI. Restart Claude Code." with title "Claude Code — Limit Reached" sound name "Basso"'
