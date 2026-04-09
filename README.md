@@ -41,7 +41,11 @@ After restart:
 ```bash
 claude plugin marketplace add vaddisrinivas/cc-litellm
 claude plugin install cc-litellm
-bash install.sh   # sets up ~/.config/cc-litellm/.env with your credentials
+
+# Required after install — sets up credentials and starts services
+CACHE=$(ls -d ~/.claude/plugins/cache/vaddisrinivas-cc-litellm/cc-litellm/*/  2>/dev/null || \
+        ls -d ~/.claude/plugins/cache/cc-litellm/cc-litellm/*/ 2>/dev/null)
+bash "$CACHE/install.sh"
 ```
 
 ### Manual
