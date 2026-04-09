@@ -1,160 +1,108 @@
 # claude-code-fallback-proxy
 
-Automatically falls back to Azure AI when your Anthropic credits are exhausted — without losing your session or manually doing anything.
+A Claude Code plugin that automatically falls back to Azure AI when your Anthropic credits are exhausted — without losing your session or doing anything manually.
 
-## What it does
+## How it works
 
-By default, Claude Code talks directly to Anthropic. When your credits run out, Claude Code fires a `StopFailure` event with reason `billing_error`. This project hooks into that event to:
+Claude Code fires a `StopFailure` event with reason `billing_error` when your Anthropic credits run out. This plugin hooks into that event to:
 
-1. Rewrite `~/.claude/settings.json` to point Claude Code at a local LiteLLM proxy
+1. Rewrite `~/.claude/settings.json` to route Claude Code through a local LiteLLM proxy
 2. Pop a macOS notification telling you to restart Claude Code
-3. On restart, the proxy transparently routes all requests to Azure AI
+3. On restart, the proxy transparently forwards requests to Azure AI
 
-When you top up Anthropic credits, run `bash plugin/uninstall.sh` (or edit settings.json) to switch back.
+When you top up credits, run `bash install.sh` to reset back to direct Anthropic.
 
 ```
-Normal:            Claude Code ──► Anthropic API (direct, zero overhead)
+Normal:
+  Claude Code ──► Anthropic API (direct, zero overhead)
 
-Credits exhausted: StopFailure hook fires
-                       │
-                       ├── writes ANTHROPIC_BASE_URL to ~/.claude/settings.json
-                       └── macOS notification: "Credits exhausted — restart Claude"
+Credits exhausted:
+  StopFailure/billing_error hook fires
+    ├── writes ANTHROPIC_BASE_URL to ~/.claude/settings.json
+    └── macOS notification: "Credits exhausted — restart Claude Code"
 
-After restart:     Claude Code ──► LiteLLM proxy (localhost:4000) ──► Azure AI
+After restart:
+  Claude Code ──► LiteLLM proxy (localhost:4000) ──► Azure AI
 ```
 
 ## Requirements
 
 - macOS (notifications via `osascript`)
 - Docker Desktop
-- Python 3 (standard library only — for the alert webhook)
+- Python 3 (stdlib only)
 - [Claude Code](https://claude.ai/code)
 - An Anthropic API key
-- An Azure AI Services resource with at least one deployed model
+- An Azure AI Services resource with a deployed chat model
 
-## Setup
+## Install
 
-### 1. Clone
+### Via Claude Code plugin system (recommended)
+
+```bash
+claude plugin install https://github.com/your-username/claude-code-fallback-proxy
+```
+
+Then set up credentials:
+
+```bash
+cp .env.example .env
+# edit .env with your keys
+```
+
+### Manual
 
 ```bash
 git clone https://github.com/your-username/claude-code-fallback-proxy
 cd claude-code-fallback-proxy
-```
-
-### 2. Configure credentials
-
-```bash
 cp .env.example .env
+# edit .env with your keys
+bash install.sh
 ```
 
-Edit `.env`:
+## Configuration
+
+### `.env`
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...            # your Anthropic key (used by the proxy when active)
-AZURE_AI_API_KEY=...                    # Azure AI Services key
+ANTHROPIC_API_KEY=sk-ant-...
+AZURE_AI_API_KEY=your-azure-ai-api-key
 AZURE_AI_API_BASE=https://your-resource.cognitiveservices.azure.com/models
-LITELLM_MASTER_KEY=sk-proxy-local       # any string — local proxy auth token
+LITELLM_MASTER_KEY=sk-proxy-local   # any string — local proxy auth token
 ```
 
-### 3. Edit `config.yaml` to match your Azure deployment
+### `config.yaml` — change the fallback model
 
-The default config references `gpt-54-nano`. Replace with whatever model you have deployed:
+The default fallback model is `gpt-54-nano` via Azure AI. Replace with any model your Azure resource has deployed:
 
 ```yaml
-- model_name: gpt-54-nano          # ← change to your deployed model name
+- model_name: gpt-4o-mini           # ← your deployed model name
   litellm_params:
-    model: azure_ai/gpt-54-nano    # ← match this too
-    ...
+    model: azure_ai/gpt-4o-mini     # ← match this
+    api_base: os.environ/AZURE_AI_API_BASE
+    api_key: os.environ/AZURE_AI_API_KEY
 ```
 
-You can find your model deployment name in the Azure AI Studio portal under **Deployments**.
+You can find your model deployment name in Azure AI Studio → Deployments.
 
-### 4. Install
-
-```bash
-bash plugin/install.sh
-```
-
-This:
-- Starts the LiteLLM proxy in Docker on port `4000`
-- Starts the alert webhook server on port `4001`
-- Registers two hooks in `~/.claude/settings.json`:
-  - `SessionStart` — auto-restarts the proxy and alert server if they're down
-  - `StopFailure/billing_error` — switches to proxy and sends notification on credit exhaustion
+LiteLLM supports many providers (OpenAI, Bedrock, Vertex, Ollama). See [LiteLLM docs](https://docs.litellm.ai) for the full list.
 
 ## Files
 
 ```
-├── config.yaml                       # LiteLLM model list, fallbacks, budget config
-├── docker-compose.yml                # Runs LiteLLM proxy on port 4000
-├── alert.py                          # Tiny webhook server → macOS notifications (port 4001)
-├── .env.example                      # Credential template (copy to .env)
-└── plugin/
-    ├── install.sh                    # One-shot setup script
-    └── scripts/
-        ├── session_start.sh          # SessionStart hook: ensures proxy + alert are running
-        └── billing_error.sh          # StopFailure hook: activates proxy on credit exhaustion
+├── .claude-plugin/
+│   ├── plugin.json          # Claude Code plugin manifest
+│   └── marketplace.json     # Marketplace metadata
+├── hooks/
+│   └── hooks.json           # SessionStart + StopFailure/billing_error hooks
+├── scripts/
+│   ├── session_start.sh     # Keeps proxy + alert server alive on session start
+│   └── billing_error.sh     # Activates proxy and sends notification on credit exhaustion
+├── config.yaml              # LiteLLM model list and fallback routing
+├── docker-compose.yml       # LiteLLM proxy on port 4000
+├── alert.py                 # Webhook server → macOS notifications (port 4001)
+├── .env.example             # Credential template
+└── install.sh               # Manual install fallback
 ```
-
-## How the proxy works
-
-The proxy is [LiteLLM](https://github.com/BerriAI/litellm), running in Docker. It exposes an OpenAI-compatible API on `localhost:4000` that Claude Code can talk to via `ANTHROPIC_BASE_URL`.
-
-`config.yaml` defines:
-- **Model aliases** — Claude model names (e.g. `claude-sonnet-4-6`) mapped to their actual providers
-- **Fallbacks** — if a model fails, route to an alternative (e.g. `claude-sonnet-4-6` → `gpt-54-nano`)
-- **Budget** — optional spend cap over a rolling period
-
-When `billing_error.sh` activates the proxy, it sets:
-
-```json
-"env": {
-  "ANTHROPIC_BASE_URL": "http://localhost:4000",
-  "ANTHROPIC_AUTH_TOKEN": "sk-proxy-local"
-}
-```
-
-in `~/.claude/settings.json`. Claude Code picks this up on the next session start and routes all API calls through the proxy.
-
-## Adding more fallback models
-
-Edit `config.yaml` to add any provider LiteLLM supports (OpenAI, Bedrock, Vertex, Ollama, etc.):
-
-```yaml
-model_list:
-  - model_name: claude-sonnet-4-6
-    litellm_params:
-      model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  - model_name: my-fallback
-    litellm_params:
-      model: openai/gpt-4o-mini
-      api_key: os.environ/OPENAI_API_KEY
-
-router_settings:
-  fallbacks:
-    - {"claude-sonnet-4-6": ["my-fallback"]}
-```
-
-Then restart the proxy: `docker compose restart`
-
-## Switching back to Anthropic
-
-Once you've topped up credits, remove the proxy env vars from `~/.claude/settings.json`:
-
-```bash
-python3 -c "
-import json
-p = '$HOME/.claude/settings.json'
-c = json.load(open(p))
-c.get('env', {}).pop('ANTHROPIC_BASE_URL', None)
-c.get('env', {}).pop('ANTHROPIC_AUTH_TOKEN', None)
-json.dump(c, open(p,'w'), indent=2)
-"
-```
-
-Or run `bash plugin/install.sh` again — it clears those keys as part of setup.
 
 ## Ports
 
@@ -163,17 +111,21 @@ Or run `bash plugin/install.sh` again — it clears those keys as part of setup.
 | 4000 | LiteLLM proxy (OpenAI-compatible) |
 | 4001 | Alert webhook server |
 
+## Switching back to direct Anthropic
+
+Once credits are topped up:
+
+```bash
+bash install.sh
+```
+
+This clears `ANTHROPIC_BASE_URL` from `~/.claude/settings.json` and resets to direct Anthropic.
+
 ## Troubleshooting
 
 **Proxy not starting**
 ```bash
 docker compose logs litellm
-```
-
-**Alert server not running after reboot**
-The `SessionStart` hook restarts it automatically when you open Claude Code. Or run manually:
-```bash
-python3 alert.py 4001 &
 ```
 
 **Test the notification manually**
@@ -183,5 +135,8 @@ curl -s -X POST http://localhost:4001 \
   -d '{"alert_type": "budget_crossed", "message": "test"}'
 ```
 
-**Verify Claude Code is routing through the proxy**
-Check `~/.claude/settings.json` for an `env` block with `ANTHROPIC_BASE_URL`. If it's absent, Claude Code is using Anthropic directly (normal state).
+**Check if proxy mode is active**
+```bash
+grep -A3 '"env"' ~/.claude/settings.json
+```
+If `ANTHROPIC_BASE_URL` is present → proxy mode active. Absent → direct Anthropic.

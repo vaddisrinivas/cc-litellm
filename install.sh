@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Install the proxy-fallback plugin into Claude Code settings.
-# Run from anywhere — paths are resolved relative to this script.
+# Manual install — use this if you can't install via `claude plugin install`.
+# Patches ~/.claude/settings.json and starts proxy services.
 set -euo pipefail
 
 SETTINGS="$HOME/.claude/settings.json"
 PLUGIN_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-echo "proxy-fallback: installing..."
+echo "claude-code-fallback-proxy: installing..."
 
 python3 - "$SETTINGS" "$PLUGIN_ROOT" <<'EOF'
 import sys, json
@@ -16,7 +16,7 @@ with open(path) as f:
     cfg = json.load(f)
 
 # Remove proxy env vars — direct Anthropic is the default.
-# The billing_error hook switches to proxy on credit exhaustion.
+# The billing_error hook activates the proxy on credit exhaustion.
 cfg.get("env", {}).pop("ANTHROPIC_BASE_URL", None)
 cfg.get("env", {}).pop("ANTHROPIC_AUTH_TOKEN", None)
 if cfg.get("env") == {}:
@@ -44,12 +44,11 @@ with open(path, "w") as f:
 print("  settings.json updated")
 EOF
 
-# Start services immediately
 bash "$PLUGIN_ROOT/scripts/session_start.sh"
 
-echo "proxy-fallback: done."
+echo "claude-code-fallback-proxy: done."
 echo ""
-echo "  Normal:           Claude Code → Anthropic (direct)"
+echo "  Normal:            Claude Code → Anthropic (direct)"
 echo "  Credits exhausted: hook fires → switches to proxy → Azure AI + notification"
-echo "  Proxy:            http://localhost:4000 (standby)"
-echo "  Alerts:           http://localhost:4001 (standby)"
+echo "  Proxy:             http://localhost:4000 (standby)"
+echo "  Alerts:            http://localhost:4001 (standby)"

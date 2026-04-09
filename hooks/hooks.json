@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/session_start.sh",
+            "timeout": 8000,
+            "suppressOutput": true
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "billing_error",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/billing_error.sh",
+            "timeout": 10000,
+            "suppressOutput": true
+          }
+        ]
+      }
+    ]
+  }
+}

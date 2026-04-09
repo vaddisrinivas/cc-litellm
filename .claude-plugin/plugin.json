@@ -1,0 +1,12 @@
+{
+  "name": "claude-code-fallback-proxy",
+  "version": "1.0.0",
+  "description": "Automatically falls back to Azure AI when Anthropic credits are exhausted. Zero overhead during normal usage.",
+  "author": {
+    "name": "your-username",
+    "url": "https://github.com/your-username"
+  },
+  "repository": "https://github.com/your-username/claude-code-fallback-proxy",
+  "license": "MIT",
+  "keywords": ["fallback", "azure", "credits", "proxy", "litellm"]
+}

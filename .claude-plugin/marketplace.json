@@ -1,0 +1,17 @@
+{
+  "name": "claude-code-fallback-proxy",
+  "owner": {
+    "name": "your-username"
+  },
+  "metadata": {
+    "description": "Auto-fallback to Azure AI when Anthropic credits run out. Uses Claude Code's StopFailure hook — zero overhead during normal usage.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "claude-code-fallback-proxy",
+      "source": "./",
+      "description": "Automatically switches Claude Code to a LiteLLM proxy (Azure AI) on billing_error, then notifies you via macOS notification."
+    }
+  ]
+}
