@@ -39,11 +39,10 @@ After restart:
 ### Via Claude Code plugin system
 
 ```bash
-claude plugin install https://github.com/your-username/cc-litellm
-bash ~/.claude/plugins/cache/your-username-cc-litellm/cc-litellm/*/install.sh
+claude plugin marketplace add vaddisrinivas/cc-litellm
+claude plugin install cc-litellm
+bash install.sh   # sets up ~/.config/cc-litellm/.env with your credentials
 ```
-
-The second command sets up your credentials in `~/.config/cc-litellm/.env`.
 
 ### Manual
 
