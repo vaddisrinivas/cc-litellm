@@ -1,33 +1,27 @@
 model_list:
   - model_name: claude-opus-4-6
     litellm_params:
-      model: anthropic/claude-opus-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
+      model: azure_ai/gpt-54-nano
+      api_base: os.environ/AZURE_AI_API_BASE
+      api_key: os.environ/AZURE_AI_API_KEY
 
   - model_name: claude-sonnet-4-6
     litellm_params:
-      model: anthropic/claude-sonnet-4-6
-      api_key: os.environ/ANTHROPIC_API_KEY
+      model: azure_ai/gpt-54-nano
+      api_base: os.environ/AZURE_AI_API_BASE
+      api_key: os.environ/AZURE_AI_API_KEY
 
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
-      model: anthropic/claude-haiku-4-5-20251001
-      api_key: os.environ/ANTHROPIC_API_KEY
+      model: azure_ai/gpt-54-nano
+      api_base: os.environ/AZURE_AI_API_BASE
+      api_key: os.environ/AZURE_AI_API_KEY
 
   - model_name: gpt-54-nano
     litellm_params:
       model: azure_ai/gpt-54-nano
       api_base: os.environ/AZURE_AI_API_BASE
       api_key: os.environ/AZURE_AI_API_KEY
-
-router_settings:
-  fallbacks:
-    - {"claude-opus-4-6": ["gpt-54-nano"]}
-    - {"claude-sonnet-4-6": ["gpt-54-nano"]}
-    - {"claude-haiku-4-5-20251001": ["gpt-54-nano"]}
-  context_window_fallbacks:
-    - {"claude-sonnet-4-6": ["gpt-54-nano"]}
-  retry_after_failure_codes: [402, 429]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
@@ -39,4 +33,4 @@ litellm_settings:
 alerting:
   - "webhook"
 
-alert_webhook_url: "http://host.docker.internal:4001"
+alert_webhook_url: "http://localhost:4001"

@@ -22,7 +22,7 @@ with open(path) as f:
 
 cfg.setdefault("env", {}).update({
     "ANTHROPIC_BASE_URL": "http://localhost:4000",
-    "ANTHROPIC_AUTH_TOKEN": master_key
+    "ANTHROPIC_API_KEY": master_key
 })
 
 with open(path, "w") as f:
