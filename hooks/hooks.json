@@ -14,12 +14,12 @@
     ],
     "StopFailure": [
       {
-        "matcher": "billing_error",
+        "matcher": "billing_error|credit_balance|overloaded|rate_limit|usage_limit|limit_reached|capacity",
         "hooks": [
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/billing_error.sh",
-            "timeout": 10000,
+            "timeout": 130000,
             "suppressOutput": true
           }
         ]
