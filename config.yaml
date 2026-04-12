@@ -34,4 +34,4 @@ litellm_settings:
 alerting:
   - "webhook"
 
-alert_webhook_url: "http://localhost:4001"
+alert_webhook_url: "http://host.docker.internal:4001"
