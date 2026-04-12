@@ -23,23 +23,17 @@ if [[ $? -ne 0 ]] || [[ "$RESULT" == *"gave up:true"* ]]; then
   exit 0
 fi
 
-# User approved — inject proxy env vars into settings.json
-python3 - "$SETTINGS" "$MASTER_KEY" <<'PYEOF'
-import sys, json
+# User approved — set env vars at system level (GUI + CLI)
+# launchctl: propagates to all GUI apps including Claude Code desktop
+launchctl setenv ANTHROPIC_BASE_URL "http://localhost:4000"
+launchctl setenv ANTHROPIC_API_KEY "$MASTER_KEY"
 
-path, master_key = sys.argv[1], sys.argv[2]
-with open(path) as f:
-    cfg = json.load(f)
-
-cfg.setdefault("env", {}).update({
-    "ANTHROPIC_BASE_URL": "http://localhost:4000",
-    "ANTHROPIC_API_KEY": master_key
-})
-
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-PYEOF
+# zshenv: propagates to CLI sessions after restart
+ZSHENV="$HOME/.zshenv"
+# Remove any prior proxy lines, then append
+grep -v 'ANTHROPIC_BASE_URL\|# cc-litellm proxy' "$ZSHENV" 2>/dev/null > /tmp/zshenv_tmp || true
+printf '\n# cc-litellm proxy\nexport ANTHROPIC_BASE_URL=http://localhost:4000\nexport ANTHROPIC_API_KEY=%s\n' "$MASTER_KEY" >> /tmp/zshenv_tmp
+mv /tmp/zshenv_tmp "$ZSHENV"
 
 # Confirm switch
 osascript -e 'display notification "Switched to Azure AI proxy. Restart Claude Code to continue." with title "Claude Code — Azure Active" sound name "Glass"'
