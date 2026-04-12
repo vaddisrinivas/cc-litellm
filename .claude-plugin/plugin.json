@@ -1,6 +1,6 @@
 {
   "name": "cc-litellm",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Automatically falls back to Azure AI (via LiteLLM) when Anthropic credits are exhausted. Zero overhead during normal usage.",
   "author": {
     "name": "your-username",
@@ -8,7 +8,13 @@
   },
   "repository": "https://github.com/your-username/cc-litellm",
   "license": "MIT",
-  "keywords": ["fallback", "azure", "credits", "proxy", "litellm"],
+  "keywords": [
+    "fallback",
+    "azure",
+    "credits",
+    "proxy",
+    "litellm"
+  ],
   "hooks": {
     "SessionStart": [
       {
@@ -24,16 +30,23 @@
     ],
     "StopFailure": [
       {
-        "matcher": "billing_error",
+        "matcher": "billing_error|credit_balance|overloaded|rate_limit|usage_limit|limit_reached|capacity",
         "hooks": [
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/billing_error.sh",
-            "timeout": 10000,
+            "timeout": 130000,
             "suppressOutput": true
           }
         ]
       }
     ]
-  }
+  },
+  "skills": [
+    {
+      "name": "status",
+      "description": "Show cc-litellm proxy status, Azure connectivity, and billing_error history",
+      "path": "skills/status.md"
+    }
+  ]
 }
