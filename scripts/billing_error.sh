@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Fired by Claude Code's StopFailure hook on billing/limit errors.
-# Shows approval dialog — switches to Azure proxy, kills + relaunches Claude.
+# Patches settings.json, sets launchctl env, kills + relaunches Claude.
 
 CONFIG_HOME="${CC_LITELLM_HOME:-$HOME/.config/cc-litellm}"
+SETTINGS="$HOME/.claude/settings.json"
 HISTORY="$CONFIG_HOME/history.log"
 mkdir -p "$CONFIG_HOME"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$HISTORY"; }
 
-# Read master key from config, fall back to default
 MASTER_KEY="sk-proxy-local"
 if [[ -f "$CONFIG_HOME/.env" ]]; then
   val=$(grep '^LITELLM_MASTER_KEY=' "$CONFIG_HOME/.env" | cut -d= -f2 | tr -d '"')
   MASTER_KEY="${val:-sk-proxy-local}"
 fi
 
-log "billing_error fired (hook triggered)"
+log "billing_error fired"
 
 # Show approval dialog
 RESULT=$(osascript -e '
@@ -23,37 +23,53 @@ display dialog "Claude Code usage limit reached.\n\nSwitch to Azure AI (gpt-54-n
 ' 2>&1)
 
 if [[ $? -ne 0 ]] || [[ "$RESULT" == *"gave up:true"* ]]; then
-  log "user cancelled or timed out — staying on Anthropic"
+  log "cancelled — staying on Anthropic"
   osascript -e 'display notification "Staying on Anthropic. Restart Claude Code when limits reset." with title "Claude Code" sound name "Pop"'
   exit 0
 fi
 
-log "user approved — switching to Azure proxy"
+log "approved — switching to Azure proxy (gpt-54-nano)"
 
-# 1. Set env vars at system level BEFORE relaunching
+# 1. Patch settings.json — ANTHROPIC_AUTH_TOKEN is correct per official docs
+#    (https://code.claude.com/docs/en/llm-gateway.md)
+python3 - "$SETTINGS" "$MASTER_KEY" <<'EOF'
+import sys, json
+path, key = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    cfg = json.load(f)
+cfg.setdefault("env", {}).update({
+    "ANTHROPIC_BASE_URL": "http://localhost:4000",
+    "ANTHROPIC_AUTH_TOKEN": key
+})
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+EOF
+log "settings.json patched (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN)"
+
+# 2. launchctl — belt-and-suspenders for GUI app env
 launchctl setenv ANTHROPIC_BASE_URL "http://localhost:4000"
-launchctl setenv ANTHROPIC_API_KEY "$MASTER_KEY"
+launchctl setenv ANTHROPIC_AUTH_TOKEN "$MASTER_KEY"
 log "launchctl setenv done"
 
-# 2. Update ~/.zshenv for CLI sessions
+# 3. ~/.zshenv — CLI sessions
 ZSHENV="$HOME/.zshenv"
-grep -v 'ANTHROPIC_BASE_URL\|ANTHROPIC_API_KEY\|# cc-litellm proxy' "$ZSHENV" 2>/dev/null > /tmp/zshenv_tmp || true
-printf '\n# cc-litellm proxy\nexport ANTHROPIC_BASE_URL=http://localhost:4000\nexport ANTHROPIC_API_KEY=%s\n' "$MASTER_KEY" >> /tmp/zshenv_tmp
+grep -v 'ANTHROPIC_BASE_URL\|ANTHROPIC_AUTH_TOKEN\|ANTHROPIC_API_KEY\|# cc-litellm proxy' "$ZSHENV" 2>/dev/null > /tmp/zshenv_tmp || true
+printf '\n# cc-litellm proxy\nexport ANTHROPIC_BASE_URL=http://localhost:4000\nexport ANTHROPIC_AUTH_TOKEN=%s\n' "$MASTER_KEY" >> /tmp/zshenv_tmp
 mv /tmp/zshenv_tmp "$ZSHENV"
 log "~/.zshenv updated"
 
-# 3. Kill Claude desktop app, relaunch — new process inherits launchctl env
+# 4. Kill + relaunch Claude (new process loads updated settings.json)
 log "killing Claude.app..."
 osascript -e 'tell application "Claude" to quit' 2>/dev/null || true
 sleep 1
-# Force kill if still running
 pkill -f "Claude.app/Contents/MacOS" 2>/dev/null || true
 sleep 1
 
 log "relaunching Claude.app..."
 open -a "Claude"
 
-# 4. Wait for Claude to open, then send "continue" to resume session
+# 5. Send "continue" after app opens
 sleep 4
 osascript <<'APPLESCRIPT'
 tell application "Claude" to activate
@@ -61,9 +77,9 @@ delay 1
 tell application "System Events"
   tell process "Claude"
     keystroke "continue"
-    key code 36  -- Return
+    key code 36
   end tell
 end tell
 APPLESCRIPT
 
-log "relaunch + continue sent — proxy=http://localhost:4000"
+log "done — proxy=http://localhost:4000 model=gpt-54-nano"
