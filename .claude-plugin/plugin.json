@@ -42,11 +42,5 @@
       }
     ]
   },
-  "skills": [
-    {
-      "name": "status",
-      "description": "Show cc-litellm proxy status, Azure connectivity, and billing_error history",
-      "path": "skills/status.md"
-    }
-  ]
+  "skills": "./skills/"
 }
