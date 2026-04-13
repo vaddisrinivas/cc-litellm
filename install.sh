@@ -33,20 +33,17 @@ cfg.get("env", {}).pop("ANTHROPIC_AUTH_TOKEN", None)
 if cfg.get("env") == {}:
     del cfg["env"]
 
-# SessionStart hook: keep proxy + alert server alive
-session_cmd = f"bash {plugin_root}/scripts/session_start.sh"
-session_hooks = cfg.setdefault("hooks", {}).setdefault("SessionStart", [])
-if not any(h.get("command") == session_cmd for e in session_hooks for h in e.get("hooks", [])):
-    session_hooks.append({"hooks": [{"type": "command", "command": session_cmd, "timeout": 8000, "suppressOutput": True}]})
+# Remove ALL existing cc-litellm hooks (any version/path) then add fresh
+def is_litellm(entry):
+    return any("cc-litellm" in h.get("command", "") for h in entry.get("hooks", []))
 
-# StopFailure/billing_error: switch to proxy + notify
-billing_cmd = f"bash {plugin_root}/scripts/billing_error.sh"
-stop_hooks = cfg["hooks"].setdefault("StopFailure", [])
-if not any(h.get("command") == billing_cmd for e in stop_hooks for h in e.get("hooks", [])):
-    stop_hooks.append({
-        "matcher": "billing_error",
-        "hooks": [{"type": "command", "command": billing_cmd, "timeout": 10000, "suppressOutput": True}]
-    })
+hooks = cfg.setdefault("hooks", {})
+
+hooks["SessionStart"] = [e for e in hooks.get("SessionStart", []) if not is_litellm(e)]
+hooks["SessionStart"].append({"hooks": [{"type": "command", "command": f"bash {plugin_root}/scripts/session_start.sh", "timeout": 8000, "suppressOutput": True}]})
+
+hooks["StopFailure"] = [e for e in hooks.get("StopFailure", []) if not is_litellm(e)]
+hooks["StopFailure"].append({"matcher": "billing_error", "hooks": [{"type": "command", "command": f"bash {plugin_root}/scripts/billing_error.sh", "timeout": 130000, "suppressOutput": True}]})
 
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
