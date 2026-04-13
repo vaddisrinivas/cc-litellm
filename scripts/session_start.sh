@@ -37,11 +37,12 @@ _stop_proxy() {
 }
 
 # 1. Proxy: start fresh or restart if stale config
-if lsof -ti:4000 >/dev/null 2>&1; then
-  # Check if running with correct config
-  RUNNING_CONFIG=$(pgrep -af "litellm.*--port 4000" 2>/dev/null | grep -o '\-\-config [^ ]*' | awk '{print $2}')
-  if [[ -n "$RUNNING_CONFIG" && "$RUNNING_CONFIG" != "$EXPECTED_CONFIG" ]]; then
-    echo "[cc-litellm] stale config detected, restarting proxy" >> "$CONFIG_HOME/session.log"
+_PROXY_PID=$(lsof -ti:4000 2>/dev/null | head -1)
+if [[ -n "$_PROXY_PID" ]]; then
+  # Use ps to get full args (pgrep -a truncates on macOS)
+  RUNNING_CONFIG=$(ps -p "$_PROXY_PID" -o args= 2>/dev/null | grep -o '\-\-config [^ ]*' | awk '{print $2}')
+  if [[ -z "$RUNNING_CONFIG" || "$RUNNING_CONFIG" != "$EXPECTED_CONFIG" ]]; then
+    echo "[cc-litellm] stale config detected (running=${RUNNING_CONFIG:-unknown}), restarting proxy" >> "$CONFIG_HOME/session.log"
     _stop_proxy
     _start_proxy
   fi
