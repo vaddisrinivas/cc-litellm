@@ -1,6 +1,6 @@
 {
   "name": "cc-litellm",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Automatically falls back to Azure AI (via LiteLLM) when Anthropic credits are exhausted. Zero overhead during normal usage.",
   "author": {
     "name": "your-username",

@@ -37,7 +37,9 @@ import sys, json
 path, key = sys.argv[1], sys.argv[2]
 with open(path) as f:
     cfg = json.load(f)
-cfg.setdefault("env", {}).update({
+env = cfg.setdefault("env", {})
+env.pop("ANTHROPIC_API_KEY", None)  # remove stale key from old versions
+env.update({
     "ANTHROPIC_BASE_URL": "http://localhost:4000",
     "ANTHROPIC_AUTH_TOKEN": key
 })

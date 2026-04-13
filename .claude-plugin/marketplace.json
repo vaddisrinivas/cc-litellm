@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Auto-fallback to Azure AI when Anthropic credits run out. Uses Claude Code's StopFailure hook — zero overhead during normal usage.",
-    "version": "1.1.1"
+    "version": "1.1.2"
   },
   "plugins": [
     {

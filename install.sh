@@ -28,8 +28,8 @@ with open(path) as f:
 
 # Remove proxy env vars — direct Anthropic is the default.
 # billing_error hook re-activates the proxy when credits run out.
-cfg.get("env", {}).pop("ANTHROPIC_BASE_URL", None)
-cfg.get("env", {}).pop("ANTHROPIC_AUTH_TOKEN", None)
+for k in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
+    cfg.get("env", {}).pop(k, None)
 if cfg.get("env") == {}:
     del cfg["env"]
 
