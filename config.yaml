@@ -30,6 +30,7 @@ litellm_settings:
   budget_duration: "30d"
   max_budget: 50
   use_chat_completions_url_for_anthropic_messages: true
+  drop_params: true
 
 alerting:
   - "webhook"
