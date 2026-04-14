@@ -30,24 +30,51 @@ fi
 
 log "approved — switching to Azure proxy (gpt-54-nano)"
 
-# 1. Patch settings.json — ANTHROPIC_AUTH_TOKEN is correct per official docs
-#    (https://code.claude.com/docs/en/llm-gateway.md)
-python3 - "$SETTINGS" "$MASTER_KEY" <<'EOF'
+# 1. Patch settings.json — set proxy env + disable plugins (save state for revert)
+python3 - "$SETTINGS" "$MASTER_KEY" "$CONFIG_HOME" <<'EOF'
 import sys, json
-path, key = sys.argv[1], sys.argv[2]
+path, key, config_home = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as f:
     cfg = json.load(f)
+
+# Set proxy env
 env = cfg.setdefault("env", {})
-env.pop("ANTHROPIC_API_KEY", None)  # remove stale key from old versions
+env.pop("ANTHROPIC_API_KEY", None)
 env.update({
     "ANTHROPIC_BASE_URL": "http://localhost:4000",
     "ANTHROPIC_AUTH_TOKEN": key
 })
+
+# Save current plugin state, then disable all except cc-litellm
+plugins = cfg.get("enabledPlugins", {})
+with open(f"{config_home}/plugins_backup.json", "w") as f2:
+    json.dump(plugins, f2)
+for name in plugins:
+    if "cc-litellm" not in name:
+        plugins[name] = False
+
+# Save current hooks state, then disable non-cc-litellm hooks
+hooks = cfg.get("hooks", {})
+hooks_backup = {}
+for event, entries in hooks.items():
+    hooks_backup[event] = []
+    for entry in entries:
+        is_litellm = any("session_start.sh" in h.get("command", "") or "billing_error.sh" in h.get("command", "")
+               for h in entry.get("hooks", []))
+        if not is_litellm:
+            hooks_backup[event].append(entry)
+with open(f"{config_home}/hooks_backup.json", "w") as f2:
+    json.dump(hooks_backup, f2)
+# Keep only cc-litellm hooks
+for event in hooks:
+    hooks[event] = [e for e in hooks[event]
+                    if any("cc-litellm" in h.get("command", "") for h in e.get("hooks", []))]
+
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
 EOF
-log "settings.json patched (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN)"
+log "settings.json patched (proxy env + plugins disabled)"
 
 # 2. launchctl — belt-and-suspenders for GUI app env
 launchctl setenv ANTHROPIC_BASE_URL "http://localhost:4000"

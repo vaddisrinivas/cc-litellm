@@ -34,15 +34,16 @@ if cfg.get("env") == {}:
     del cfg["env"]
 
 # Remove ALL existing cc-litellm hooks (any version/path) then add fresh
-def is_litellm(entry):
-    return any("cc-litellm" in h.get("command", "") for h in entry.get("hooks", []))
+def is_ours(entry):
+    return any("session_start.sh" in h.get("command", "") or "billing_error.sh" in h.get("command", "")
+               for h in entry.get("hooks", []))
 
 hooks = cfg.setdefault("hooks", {})
 
-hooks["SessionStart"] = [e for e in hooks.get("SessionStart", []) if not is_litellm(e)]
+hooks["SessionStart"] = [e for e in hooks.get("SessionStart", []) if not is_ours(e)]
 hooks["SessionStart"].append({"hooks": [{"type": "command", "command": f"bash {plugin_root}/scripts/session_start.sh", "timeout": 8000, "suppressOutput": True}]})
 
-hooks["StopFailure"] = [e for e in hooks.get("StopFailure", []) if not is_litellm(e)]
+hooks["StopFailure"] = [e for e in hooks.get("StopFailure", []) if not is_ours(e)]
 hooks["StopFailure"].append({"matcher": "billing_error", "hooks": [{"type": "command", "command": f"bash {plugin_root}/scripts/billing_error.sh", "timeout": 130000, "suppressOutput": True}]})
 
 with open(path, "w") as f:

@@ -31,6 +31,9 @@ litellm_settings:
   max_budget: 50
   use_chat_completions_url_for_anthropic_messages: true
   drop_params: true
+  allowed_openai_params:
+    - context_management
+    - output_config
 
 alerting:
   - "webhook"
