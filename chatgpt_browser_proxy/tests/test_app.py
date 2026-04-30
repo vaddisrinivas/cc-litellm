@@ -315,6 +315,23 @@ def test_responses_returns_function_call_items(client, monkeypatch):
     assert "prompt_tokens" not in body["usage"]
 
 
+def test_responses_parses_tool_envelope_without_tools_field(client, monkeypatch):
+    async def fake_query(prompt, session_id, new_session):
+        return '{"tool_calls":[{"name":"Bash","arguments":{"command":"pwd"}}]}'
+
+    monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
+    response = client.post(
+        "/v1/responses",
+        headers=auth(),
+        json={"model": "chatgpt-browser", "input": "run pwd"},
+    )
+    body = response.json()
+    assert response.status_code == 200
+    assert body["output_text"] == ""
+    assert body["output"][0]["type"] == "function_call"
+    assert body["output"][0]["name"] == "Bash"
+
+
 def test_chat_completions_keeps_chat_usage_shape(client, monkeypatch):
     async def fake_query(prompt, session_id, new_session):
         return "ok"

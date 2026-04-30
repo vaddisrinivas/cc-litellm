@@ -822,7 +822,9 @@ async def _chat_completions_impl(request: Request):
         raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
 
     _store_response(session_id, response_text)
-    tool_calls = parse_tool_calls(response_text) if body.get("tools") else []
+    tool_calls = parse_tool_calls(response_text)
+    if tool_calls:
+        log(f"parsed {len(tool_calls)} tool call(s) for chat completion session {session_id[:20]}...")
 
     if body.get("stream", False):
         async def event_stream():
@@ -929,7 +931,9 @@ async def responses(request: Request):
         raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
 
     _store_response(session_id, response_text)
-    tool_calls = parse_tool_calls(response_text) if body.get("tools") else []
+    tool_calls = parse_tool_calls(response_text)
+    if tool_calls:
+        log(f"parsed {len(tool_calls)} tool call(s) for responses session {session_id[:20]}...")
 
     if body.get("stream", False):
         async def event_stream():
