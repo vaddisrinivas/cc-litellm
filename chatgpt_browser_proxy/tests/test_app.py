@@ -12,6 +12,7 @@ def reset_state(monkeypatch):
     proxy.browser_locks.clear()
     proxy.pending_responses.clear()
     monkeypatch.setattr(proxy, "API_KEY", "test-key")
+    monkeypatch.setattr(proxy, "DEFAULT_NEW_SESSION", False)
     yield
 
 
@@ -83,6 +84,7 @@ def test_user_field_is_not_session_id(client, monkeypatch):
     async def fake_query(prompt, session_id, new_session):
         assert session_id is not None
         assert not session_id.startswith('{"device_id"')
+        assert session_id.startswith("browser-stable-")
         return f"{session_id}:{new_session}"
 
     monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
@@ -96,7 +98,27 @@ def test_user_field_is_not_session_id(client, monkeypatch):
         },
     )
     assert response.status_code == 200
-    assert response.json()["session_id"].startswith("browser-")
+    assert response.json()["session_id"].startswith("browser-stable-")
+
+
+def test_missing_session_uses_stable_derived_id(client, monkeypatch):
+    seen = []
+
+    async def fake_query(prompt, session_id, new_session):
+        seen.append((session_id, new_session))
+        return "ok"
+
+    monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
+    payload = {"model": "chatgpt-browser", "messages": [{"role": "user", "content": "hi"}]}
+    headers = {**auth(), "User-Agent": "pytest-client"}
+    first = client.post("/v1/chat/completions", headers=headers, json=payload)
+    second = client.post("/v1/chat/completions", headers=headers, json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert seen[0] == seen[1]
+    assert seen[0][0].startswith("browser-stable-")
+    assert seen[0][1] is False
 
 
 def test_chat_completion_returns_tool_calls(client, monkeypatch):
@@ -141,6 +163,26 @@ def test_responses_returns_function_call_items(client, monkeypatch):
     assert body["output_text"] == ""
     assert body["output"][0]["type"] == "function_call"
     assert body["output"][0]["name"] == "Bash"
+    assert body["usage"]["input_tokens"] >= 1
+    assert body["usage"]["output_tokens"] >= 1
+    assert "prompt_tokens" not in body["usage"]
+
+
+def test_chat_completions_keeps_chat_usage_shape(client, monkeypatch):
+    async def fake_query(prompt, session_id, new_session):
+        return "ok"
+
+    monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "chatgpt-browser", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    body = response.json()
+    assert response.status_code == 200
+    assert body["usage"]["prompt_tokens"] >= 1
+    assert body["usage"]["completion_tokens"] >= 1
+    assert "input_tokens" not in body["usage"]
 
 
 def test_unsupported_image_endpoint_returns_400(client):

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -24,10 +25,10 @@ WS_TOKEN = os.getenv("CHATGPT_BROWSER_WS_TOKEN", "gemini-coder-vscode")
 BROWSER_WS_TOKEN = os.getenv("CHATGPT_BROWSER_EXTENSION_WS_TOKEN", "gemini-coder")
 REQUEST_TIMEOUT = float(os.getenv("CHATGPT_BROWSER_REQUEST_TIMEOUT", "300"))
 CONNECT_TIMEOUT = float(os.getenv("CHATGPT_BROWSER_CONNECT_TIMEOUT", "10"))
-PING_INTERVAL = float(os.getenv("CHATGPT_BROWSER_PING_INTERVAL", "3"))
+PING_INTERVAL = float(os.getenv("CHATGPT_BROWSER_PING_INTERVAL", "10"))
 TARGET_BROWSER_ID = os.getenv("CHATGPT_BROWSER_TARGET_BROWSER_ID", "")
 API_KEY = os.getenv("CHATGPT_BROWSER_API_KEY", "")
-DEFAULT_NEW_SESSION = os.getenv("CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST", "1").lower() not in (
+DEFAULT_NEW_SESSION = os.getenv("CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST", "0").lower() not in (
     "0",
     "false",
     "no",
@@ -215,6 +216,26 @@ def _truthy(value: Any) -> bool:
     return str(value).lower() in ("1", "true", "yes", "y", "on")
 
 
+def _stable_session_id(request: Request, body: dict[str, Any]) -> str:
+    """Derive a stable browser session when Claude/LiteLLM omit one.
+
+    Claude Code sends large Responses API requests without our custom
+    session_id fields. Reusing one tab per caller/model/cwd-ish metadata keeps
+    multi-turn continuity without using OpenAI's `user` field as identity.
+    """
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    seed = {
+        "model": body.get("model", MODEL_NAME),
+        "claude_session_id": metadata.get("claude_session_id"),
+        "conversation_id": metadata.get("conversation_id"),
+        "cwd": metadata.get("cwd") or metadata.get("working_directory"),
+        "anthropic_version": request.headers.get("anthropic-version"),
+        "client": request.headers.get("user-agent", ""),
+    }
+    seed_text = json.dumps(seed, sort_keys=True, default=str)
+    return "browser-stable-" + hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16]
+
+
 def _extract_session_controls(request: Request, body: dict[str, Any]) -> tuple[str | None, bool]:
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     session_id = (
@@ -239,7 +260,9 @@ def _extract_session_controls(request: Request, body: dict[str, Any]) -> tuple[s
     else:
         new_session = DEFAULT_NEW_SESSION and session_id is None
 
-    if new_session and session_id is None:
+    if session_id is None and not new_session:
+        session_id = _stable_session_id(request, body)
+    elif new_session and session_id is None:
         session_id = f"browser-{uuid.uuid4().hex}"
 
     return session_id, new_session
@@ -415,6 +438,16 @@ def _usage(prompt: str, response: str) -> dict[str, int]:
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
+    }
+
+
+def _responses_usage(prompt: str, response: str) -> dict[str, int]:
+    input_tokens = max(1, len(prompt.split()))
+    output_tokens = max(1, len(response.split()))
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
     }
 
 
@@ -745,7 +778,7 @@ async def responses(request: Request):
             "session_id": session_id,
             "output": output,
             "output_text": "" if tool_calls else response_text,
-            "usage": _usage(prompt, response_text),
+            "usage": _responses_usage(prompt, response_text),
         }
     )
 

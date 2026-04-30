@@ -63,6 +63,13 @@ model_list:
       api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
       api_version: os.environ/AZURE_AI_FOUNDRY_API_VERSION
 
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: azure/gpt-54-nano
+      api_base: os.environ/AZURE_AI_FOUNDRY_NANO_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+      api_version: os.environ/AZURE_AI_FOUNDRY_API_VERSION
+
   - model_name: gpt-5.2
     litellm_params:
       model: azure/gpt-54-nano
@@ -96,6 +103,7 @@ router_settings:
     - gpt-5.3-codex: [gpt-54-nano]
     - gpt-5.4: [gpt-54-nano]
     - claude-haiku-4-5: [gpt-54-nano]
+    - claude-haiku-4-5-20251001: [gpt-54-nano]
     - gpt-5.2: [gpt-54-nano]
   num_retries: 2
 

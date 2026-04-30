@@ -58,6 +58,8 @@ AZURE_AI_FOUNDRY_KIMI_API_BASE=https://your-resource.services.ai.azure.com/proje
 AZURE_AI_FOUNDRY_NANO_API_BASE=https://your-resource.openai.azure.com/
 AZURE_AI_FOUNDRY_API_VERSION=2025-04-01-preview
 LITELLM_MASTER_KEY=sk-proxy-local
+UI_USERNAME=local
+UI_PASSWORD=sk-proxy-local
 ZAI_API_KEY=your-zai-api-key
 
 # Optional browser provider
@@ -66,11 +68,14 @@ CHATGPT_BROWSER_API_KEY=sk-chatgpt-browser-local
 CHATGPT_BROWSER_WS_URL=embedded
 CHATGPT_BROWSER_WS_TOKEN=gemini-coder-vscode
 CHATGPT_BROWSER_EXTENSION_WS_TOKEN=gemini-coder
-CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=1
+CHATGPT_BROWSER_PING_INTERVAL=10
+CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=0
 ```
 
 `LITELLM_MASTER_KEY` can be any local token. Claude uses it as
 `ANTHROPIC_AUTH_TOKEN` when talking to the local LiteLLM proxy.
+The LiteLLM Admin UI uses `UI_USERNAME` / `UI_PASSWORD`; the example above
+logs in as `local` / `sk-proxy-local`.
 
 ## Proxy
 
@@ -115,13 +120,20 @@ external server.
 
 Session behavior:
 
-- By default, requests without a session id open a new ChatGPT chat.
+- `CHATGPT_BROWSER_REQUEST_TIMEOUT` is the maximum wait for a browser response;
+  the default is 300 seconds.
+- `CHATGPT_BROWSER_PING_INTERVAL` is only the WebSocket keepalive cadence for
+  the browser extension; the default is 10 seconds.
+- By default, requests without a session id reuse a stable derived browser
+  session for the caller/model/metadata. This preserves continuity for clients
+  like Claude/LiteLLM that do not always pass a custom session id.
 - To resume a browser chat, pass the same session id using either
   `X-Session-Id`, `X-ChatGPT-Browser-Session-Id`, request body `session_id`,
   `conversation_id`, `metadata.session_id`, `metadata.conversation_id`, or
   `metadata.claude_session_id`.
-- To force a fresh ChatGPT tab for a known id, pass `new_session: true` or
-  `X-New-Session: true`.
+- To force a fresh ChatGPT tab, pass `new_session: true` or
+  `X-New-Session: true`. To make every request fresh, set
+  `CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=1`.
 - Streaming is OpenAI-compatible but currently emitted after the browser
   response completes; token-level streaming depends on deeper ChatGPT DOM
   streaming support.
