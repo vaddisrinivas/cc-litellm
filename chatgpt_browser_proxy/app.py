@@ -255,7 +255,11 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         try:
             value = json.loads(candidate)
         except json.JSONDecodeError:
-            continue
+            try:
+                repaired = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", candidate)
+                value = json.loads(repaired)
+            except json.JSONDecodeError:
+                continue
         if isinstance(value, dict):
             return value
     return None
@@ -309,11 +313,20 @@ def _truthy(value: Any) -> bool:
 def _stable_session_id(request: Request, body: dict[str, Any]) -> str:
     """Derive a stable browser session when Claude/LiteLLM omit one."""
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+    raw_input = body.get("input")
+    if not messages and isinstance(raw_input, list):
+        messages = raw_input
+    elif not messages and raw_input:
+        messages = [{"role": "user", "content": raw_input}]
+    first_user = next((m for m in messages if isinstance(m, dict) and m.get("role") == "user"), None)
+    first_user_hash = _msg_hash(first_user) if first_user else None
     seed = {
         "model": body.get("model", MODEL_NAME),
         "claude_session_id": metadata.get("claude_session_id"),
         "conversation_id": metadata.get("conversation_id"),
         "cwd": metadata.get("cwd") or metadata.get("working_directory"),
+        "first_user": first_user_hash,
         "anthropic_version": request.headers.get("anthropic-version"),
         "client": request.headers.get("user-agent", ""),
     }

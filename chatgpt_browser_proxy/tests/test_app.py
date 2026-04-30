@@ -91,6 +91,14 @@ def test_parse_tool_calls_from_fenced_json():
     assert calls[0]["arguments"] == {"command": "pwd"}
 
 
+def test_parse_tool_calls_repairs_shell_escapes():
+    calls = proxy.parse_tool_calls(
+        r'{"tool_calls":[{"name":"Bash","arguments":{"command":"find . \( -name package.json \) -print"}}]}'
+    )
+    assert calls[0]["name"] == "Bash"
+    assert calls[0]["arguments"]["command"] == r"find . \( -name package.json \) -print"
+
+
 def test_clean_response_text_removes_chatgpt_ui_artifact():
     assert proxy.clean_response_text("Thought for a secondexact-ok") == "exact-ok"
     assert proxy.clean_response_text(" Thought for 3 seconds\nexact-ok ") == "exact-ok"
@@ -157,6 +165,31 @@ def test_missing_session_uses_stable_derived_id(client, monkeypatch):
     assert seen[0][0].startswith("browser-stable-")
     assert seen[0][1] is True
     assert seen[1][1] is False
+
+
+def test_missing_session_changes_for_unrelated_first_user(client, monkeypatch):
+    seen = []
+
+    async def fake_query(prompt, session_id, new_session):
+        seen.append(session_id)
+        return "ok"
+
+    monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
+    headers = {**auth(), "User-Agent": "pytest-client"}
+    first = client.post(
+        "/v1/chat/completions",
+        headers=headers,
+        json={"model": "chatgpt-browser", "messages": [{"role": "user", "content": "first task"}]},
+    )
+    second = client.post(
+        "/v1/chat/completions",
+        headers=headers,
+        json={"model": "chatgpt-browser", "messages": [{"role": "user", "content": "second task"}]},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert seen[0] != seen[1]
 
 
 def test_session_delta_sends_only_new_messages(client, monkeypatch):
