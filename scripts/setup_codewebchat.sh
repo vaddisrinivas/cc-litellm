@@ -127,9 +127,77 @@ if "ChatGPTApiFetchMessage" not in text:
         "}\n",
     )
     handler.write_text(text)
+text = handler.read_text()
+if "last_chatgpt_api_headers" not in text:
+    text = text.replace(
+        "const session_tabs: Record<string, number> = {}\n",
+        "const session_tabs: Record<string, number> = {}\n"
+        "let last_chatgpt_api_headers: Record<string, string> = {}\n",
+    )
+text = text.replace(
+    "  const headers = new Headers(message.headers || {})\n",
+    "  const headers = new Headers({\n"
+    "    ...last_chatgpt_api_headers,\n"
+    "    ...(message.headers || {})\n"
+    "  })\n",
+)
+if "capture_chatgpt_request_headers" not in text:
+    text = text.replace(
+        "const generate_alphanumeric_id = async (\n",
+        "const capture_chatgpt_request_headers = (\n"
+        "  details: browser.WebRequest.OnBeforeSendHeadersDetailsType\n"
+        ") => {\n"
+        "  const headers: Record<string, string> = {}\n"
+        "  for (const header of details.requestHeaders || []) {\n"
+        "    const name = header.name.toLowerCase()\n"
+        "    const value = header.value\n"
+        "    if (!value) continue\n"
+        "    if (\n"
+        "      name.startsWith('openai-sentinel-') ||\n"
+        "      name.startsWith('x-openai-') ||\n"
+        "      name == 'x-conduit-token' ||\n"
+        "      name.startsWith('oai-')\n"
+        "    ) {\n"
+        "      headers[header.name] = value\n"
+        "    }\n"
+        "  }\n"
+        "  if (Object.keys(headers).length > 0) {\n"
+        "    last_chatgpt_api_headers = headers\n"
+        "    browser.storage.local.set({ cwc_chatgpt_api_headers: headers })\n"
+        "  }\n"
+        "}\n\n"
+        "const generate_alphanumeric_id = async (\n",
+    )
+if "onBeforeSendHeaders.addListener" not in text:
+    text = text.replace(
+        "export const setup_message_listeners = () => {\n",
+        "export const setup_message_listeners = () => {\n"
+        "  browser.storage.local.get('cwc_chatgpt_api_headers').then((stored) => {\n"
+        "    const headers = stored.cwc_chatgpt_api_headers\n"
+        "    if (headers && typeof headers == 'object') {\n"
+        "      last_chatgpt_api_headers = headers as Record<string, string>\n"
+        "    }\n"
+        "  })\n\n"
+        "  browser.webRequest.onBeforeSendHeaders.addListener(\n"
+        "    capture_chatgpt_request_headers,\n"
+        "    {\n"
+        "      urls: [\n"
+        "        'https://chatgpt.com/backend-api/conversation*',\n"
+        "        'https://chatgpt.com/backend-api/f/conversation*',\n"
+        "        'https://chatgpt.com/backend-anon/f/conversation*'\n"
+        "      ]\n"
+        "    },\n"
+        "    ['requestHeaders', 'extraHeaders']\n"
+        "  )\n\n",
+    )
+handler.write_text(text)
 
 manifest = root / "apps/browser/src/manifest.json"
 data = json.loads(manifest.read_text())
+permissions = data.setdefault("permissions", [])
+for permission in ["webRequest"]:
+    if permission not in permissions:
+        permissions.append(permission)
 hosts = data.setdefault("host_permissions", [])
 for host in ["https://chatgpt.com/*"]:
     if host not in hosts:

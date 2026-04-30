@@ -125,6 +125,83 @@ def test_session_state_persists_to_disk(client, monkeypatch):
     assert proxy.session_states["persist-session"]["messages"][-1]["content"] == "persisted-ok"
 
 
+def test_browser_js_conversation_request_persists_parent_ids():
+    body = {
+        "messages": [{"role": "user", "content": "hello js"}],
+        "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}],
+    }
+    request_body, js_state, prompt = proxy._conversation_request_from_chat(body, "js-session", False)
+
+    assert request_body["action"] == "next"
+    assert request_body["model"] == proxy.JS_UPSTREAM_MODEL
+    assert request_body["messages"][0]["content"]["parts"][0] == prompt
+    assert "hello js" in prompt
+    assert "Bash" in prompt
+    assert js_state["parent_message_id"] == request_body["parent_message_id"]
+
+
+def test_parse_conversation_sse_updates_js_session_state():
+    js_state = {"conversation_id": None, "parent_message_id": "root"}
+    event = {
+        "conversation_id": "conv-123",
+        "message": {
+            "id": "msg-456",
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": ["Thought for a seconddone"]},
+        },
+    }
+    text, calls = proxy._parse_conversation_sse(f"data: {json.dumps(event)}\n\ndata: [DONE]\n", js_state)
+
+    assert text == "done"
+    assert calls == []
+    assert js_state["conversation_id"] == "conv-123"
+    assert js_state["parent_message_id"] == "msg-456"
+
+
+def test_parse_conversation_sse_extracts_prompt_shaped_tool_call():
+    js_state = {"conversation_id": None, "parent_message_id": "root"}
+    event = {
+        "conversation_id": "conv-123",
+        "message": {
+            "id": "msg-456",
+            "author": {"role": "assistant"},
+            "content": {
+                "content_type": "text",
+                "parts": ['{"tool_calls":[{"name":"Bash","arguments":{"command":"pwd"}}]}'],
+            },
+        },
+    }
+    text, calls = proxy._parse_conversation_sse(f"data: {json.dumps(event)}\n", js_state)
+
+    assert text.startswith('{"tool_calls"')
+    assert calls[0]["name"] == "Bash"
+    assert calls[0]["arguments"] == {"command": "pwd"}
+
+
+def test_chatgpt_browser_js_route_uses_embedded_api(client, monkeypatch):
+    async def fake_query(body, session_id, new_session):
+        assert session_id == "js-route"
+        assert new_session is False
+        assert body["model"] == "chatgpt-browser-js"
+        return "browser-js-ok", []
+
+    monkeypatch.setattr(proxy, "query_chatgpt_api_embedded", fake_query)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={
+            "model": "chatgpt-browser-js",
+            "session_id": "js-route",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["session_id"] == "js-route"
+    assert body["choices"][0]["message"]["content"] == "browser-js-ok"
+
+
 def test_user_field_is_not_session_id(client, monkeypatch):
     async def fake_query(prompt, session_id, new_session):
         assert session_id is not None

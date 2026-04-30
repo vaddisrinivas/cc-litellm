@@ -22,8 +22,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 MODEL_NAME = os.getenv("CHATGPT_BROWSER_MODEL", "chatgpt-browser")
 JS_MODEL_NAME = os.getenv("CHATGPT_BROWSER_JS_MODEL", "chatgpt-browser-js")
-JS_UPSTREAM_MODEL = os.getenv("CHATGPT_BROWSER_JS_UPSTREAM_MODEL", "gpt-5.4-mini")
-JS_API_URL = os.getenv("CHATGPT_BROWSER_JS_API_URL", "https://chatgpt.com/backend-api/codex/responses")
+JS_API_MODE = os.getenv("CHATGPT_BROWSER_JS_API_MODE", "conversation").lower()
+JS_UPSTREAM_MODEL = os.getenv("CHATGPT_BROWSER_JS_UPSTREAM_MODEL", "auto")
+JS_API_URL = os.getenv("CHATGPT_BROWSER_JS_API_URL", "https://chatgpt.com/backend-api/conversation")
 WS_URL = os.getenv("CHATGPT_BROWSER_WS_URL", "ws://host.docker.internal:55155")
 WS_TOKEN = os.getenv("CHATGPT_BROWSER_WS_TOKEN", "gemini-coder-vscode")
 BROWSER_WS_TOKEN = os.getenv("CHATGPT_BROWSER_EXTENSION_WS_TOKEN", "gemini-coder")
@@ -492,6 +493,122 @@ def _store_response(session_id: str, response_text: str) -> None:
         _save_session_states()
 
 
+def _last_user_prompt(body: dict[str, Any]) -> str:
+    messages = body.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            return _content_to_text(message.get("content"))
+    raw_input = body.get("input")
+    if raw_input:
+        return _content_to_text(raw_input)
+    return str(body.get("prompt") or "")
+
+
+def _browser_js_session_state(session_id: str, new_session: bool) -> dict[str, Any]:
+    state = session_states.setdefault(session_id, {})
+    if new_session or not isinstance(state.get("browser_js"), dict):
+        state["browser_js"] = {
+            "conversation_id": None,
+            "parent_message_id": str(uuid.uuid4()),
+            "turn_count": 0,
+        }
+        _save_session_states()
+    return state["browser_js"]
+
+
+def _conversation_request_from_chat(
+    body: dict[str, Any],
+    session_id: str,
+    new_session: bool,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    js_state = _browser_js_session_state(session_id, new_session)
+    prompt = _last_user_prompt(body)
+    if not prompt:
+        prompt = body_to_prompt(body)
+
+    extras = _request_extras_to_prompt(body)
+    if extras:
+        prompt = f"{prompt}\n\n{extras}" if prompt else extras
+
+    message_id = str(uuid.uuid4())
+    request_body: dict[str, Any] = {
+        "action": "next",
+        "messages": [
+            {
+                "id": message_id,
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [prompt]},
+                "metadata": {},
+            }
+        ],
+        "parent_message_id": js_state.get("parent_message_id") or str(uuid.uuid4()),
+        "model": JS_UPSTREAM_MODEL,
+        "timezone_offset_min": int(body.get("timezone_offset_min", 0) or 0),
+        "history_and_training_disabled": False,
+        "conversation_mode": {"kind": "primary_assistant"},
+        "force_paragen": False,
+        "force_rate_limit": False,
+        "reset_rate_limits": False,
+        "stream": True,
+    }
+    conversation_id = js_state.get("conversation_id")
+    if conversation_id and not new_session:
+        request_body["conversation_id"] = conversation_id
+
+    js_state["turn_count"] = int(js_state.get("turn_count", 0) or 0) + 1
+    _save_session_states()
+    return request_body, js_state, prompt
+
+
+def _parse_conversation_sse(raw: str, js_state: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    latest_text = ""
+    latest_message_id = ""
+    latest_conversation_id = ""
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event.get("error"), dict) and event["error"]:
+            raise RuntimeError(json.dumps(event["error"], ensure_ascii=False)[:1000])
+        conversation_id = event.get("conversation_id")
+        if isinstance(conversation_id, str) and conversation_id:
+            latest_conversation_id = conversation_id
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        if not message:
+            continue
+        author = message.get("author") if isinstance(message.get("author"), dict) else {}
+        if author.get("role") != "assistant":
+            continue
+        message_id = message.get("id")
+        if isinstance(message_id, str) and message_id:
+            latest_message_id = message_id
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        parts = content.get("parts")
+        if isinstance(parts, list):
+            text_parts = [part for part in parts if isinstance(part, str)]
+            if text_parts:
+                latest_text = "\n".join(text_parts)
+
+    if latest_conversation_id:
+        js_state["conversation_id"] = latest_conversation_id
+    if latest_message_id:
+        js_state["parent_message_id"] = latest_message_id
+    _save_session_states()
+
+    text = clean_response_text(latest_text)
+    return text, parse_tool_calls(text)
+
+
 async def _recv_json(ws: Any, timeout: float) -> dict[str, Any]:
     raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
     return json.loads(raw)
@@ -729,7 +846,11 @@ def _parse_codex_sse(raw: str) -> tuple[str, list[dict[str, Any]]]:
     return clean_response_text("".join(text_parts)), [call for call in tool_calls if call["name"]]
 
 
-async def query_chatgpt_api_embedded(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+async def query_chatgpt_api_embedded(
+    body: dict[str, Any],
+    session_id: str,
+    new_session: bool,
+) -> tuple[str, list[dict[str, Any]]]:
     browser_id, browser = await _select_embedded_browser()
     client_id = await _next_client_id()
     lock = _get_browser_lock(browser_id)
@@ -737,11 +858,27 @@ async def query_chatgpt_api_embedded(body: dict[str, Any]) -> tuple[str, list[di
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         pending_api_responses[client_id] = (browser_id, future)
-        request_body = _codex_request_from_chat(body)
+        if JS_API_MODE == "codex":
+            request_body = _codex_request_from_chat(body)
+            parse_response = lambda raw: _parse_codex_sse(raw)
+            headers = {
+                "accept": "text/event-stream",
+                "content-type": "application/json",
+                "openai-beta": "responses=experimental",
+                "originator": "codex_cli_rs",
+            }
+        else:
+            request_body, js_state, _prompt = _conversation_request_from_chat(body, session_id, new_session)
+            parse_response = lambda raw: _parse_conversation_sse(raw, js_state)
+            headers = {
+                "accept": "text/event-stream",
+                "content-type": "application/json",
+                "oai-language": "en-US",
+            }
         try:
             log(
                 "sending chatgpt-api-fetch "
-                f"client_id={client_id} browser_id={browser_id} url={JS_API_URL} "
+                f"client_id={client_id} browser_id={browser_id} mode={JS_API_MODE} url={JS_API_URL} "
                 f"body_chars={len(json.dumps(request_body, ensure_ascii=False))}"
             )
             await browser.send_text(
@@ -751,12 +888,7 @@ async def query_chatgpt_api_embedded(body: dict[str, Any]) -> tuple[str, list[di
                         "client_id": client_id,
                         "url": JS_API_URL,
                         "method": "POST",
-                        "headers": {
-                            "accept": "text/event-stream",
-                            "content-type": "application/json",
-                            "openai-beta": "responses=experimental",
-                            "originator": "codex_cli_rs",
-                        },
+                        "headers": headers,
                         "body": json.dumps(request_body, ensure_ascii=False),
                     }
                 )
@@ -766,7 +898,7 @@ async def query_chatgpt_api_embedded(body: dict[str, Any]) -> tuple[str, list[di
             raw_body = str(response.get("body", ""))
             if not response.get("ok"):
                 raise RuntimeError(f"ChatGPT browser JS API returned HTTP {status}: {raw_body[:1000]}")
-            text, tool_calls = _parse_codex_sse(raw_body)
+            text, tool_calls = parse_response(raw_body)
             if not text and not tool_calls:
                 raise RuntimeError(f"ChatGPT browser JS API returned no parseable output: {raw_body[:1000]}")
             log(
@@ -814,6 +946,8 @@ def _status_for_exception(exc: Exception) -> int:
         return 503
     if "timed out" in msg:
         return 504
+    if "unusual activity" in msg or "rate limit" in msg or "rate-limited" in msg:
+        return 429
     return 502
 
 
@@ -822,6 +956,8 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "model": MODEL_NAME,
+        "js_model": JS_MODEL_NAME,
+        "js_api_mode": JS_API_MODE,
         "ws_url": WS_URL,
         "auth_enabled": bool(API_KEY),
         "connected_browsers": sorted(browser_clients),
@@ -994,7 +1130,8 @@ async def _chat_completions_impl(request: Request):
         completion_id = f"chatcmpl-{uuid.uuid4().hex}"
         created = int(time.time())
         try:
-            response_text, tool_calls = await query_chatgpt_api_embedded(body)
+            session_id, new_session = _extract_session_controls(request, body)
+            response_text, tool_calls = await query_chatgpt_api_embedded(body, session_id, new_session)
         except Exception as exc:
             raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
 
@@ -1020,8 +1157,8 @@ async def _chat_completions_impl(request: Request):
                 else:
                     delta = {"role": "assistant", "content": response_text}
                     finish_reason = "stop"
-                yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]})}\n\n"
-                yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]})}\n\n"
+                yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'session_id': session_id, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]})}\n\n"
+                yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'session_id': session_id, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]})}\n\n"
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -1046,6 +1183,7 @@ async def _chat_completions_impl(request: Request):
                 "object": "chat.completion",
                 "created": created,
                 "model": model,
+                "session_id": session_id,
                 "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
                 "usage": _usage(messages_to_prompt(body.get("messages", [])), response_text),
             }

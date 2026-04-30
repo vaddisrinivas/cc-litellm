@@ -78,8 +78,9 @@ CHATGPT_BROWSER_SESSION_STATE_PATH=/data/session_state.json
 
 # Optional browser-JS API provider
 CHATGPT_BROWSER_JS_MODEL=chatgpt-browser-js
-CHATGPT_BROWSER_JS_UPSTREAM_MODEL=gpt-5.4-mini
-CHATGPT_BROWSER_JS_API_URL=https://chatgpt.com/backend-api/codex/responses
+CHATGPT_BROWSER_JS_API_MODE=conversation
+CHATGPT_BROWSER_JS_UPSTREAM_MODEL=auto
+CHATGPT_BROWSER_JS_API_URL=https://chatgpt.com/backend-api/conversation
 
 # Optional direct API provider
 CHATGPT_BROWSER_API_DIRECT_BASE=http://codex-oauth-proxy:8080/v1
@@ -171,10 +172,19 @@ Session behavior:
 into the ChatGPT DOM it sends a WebSocket request to the extension background
 service worker. The extension calls `fetch()` against
 `CHATGPT_BROWSER_JS_API_URL` with `credentials: "include"`, so the request uses
-the logged-in browser session. The proxy parses the returned SSE into an
-OpenAI-compatible chat completion. Reload the unpacked Chrome extension after
-running `bash scripts/setup_codewebchat.sh`, because Manifest V3 host
-permissions and background code do not hot-reload automatically.
+the logged-in browser session. The default mode is ChatGPT's web conversation
+endpoint (`/backend-api/conversation`) with `model=auto`; the proxy persists the
+returned `conversation_id` and parent message id in
+`CHATGPT_BROWSER_SESSION_STATE_PATH` so restart/resume can keep following the
+same browser API thread. Set `CHATGPT_BROWSER_JS_API_MODE=codex` and point
+`CHATGPT_BROWSER_JS_API_URL` at `/backend-api/codex/responses` only if you have
+an auth path that endpoint accepts. Current ChatGPT web traffic also carries
+Sentinel/conduit headers; the patched extension caches those headers from real
+ChatGPT page traffic and reuses the safe subset for browser-JS fetches. After a
+fresh extension reload, send one normal message in ChatGPT first if the JS route
+returns `Unusual activity`. Reload the unpacked Chrome extension after running
+`bash scripts/setup_codewebchat.sh`, because Manifest V3 host permissions and
+background code do not hot-reload automatically.
 
 Smoke test the local shim directly:
 
