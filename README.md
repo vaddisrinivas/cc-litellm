@@ -58,8 +58,7 @@ AZURE_AI_FOUNDRY_KIMI_API_BASE=https://your-resource.services.ai.azure.com/proje
 AZURE_AI_FOUNDRY_NANO_API_BASE=https://your-resource.openai.azure.com/
 AZURE_AI_FOUNDRY_API_VERSION=2025-04-01-preview
 LITELLM_MASTER_KEY=sk-proxy-local
-UI_USERNAME=local
-UI_PASSWORD=sk-proxy-local
+DISABLE_ADMIN_UI=true
 ZAI_API_KEY=your-zai-api-key
 
 # Optional browser provider
@@ -74,8 +73,10 @@ CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=0
 
 `LITELLM_MASTER_KEY` can be any local token. Claude uses it as
 `ANTHROPIC_AUTH_TOKEN` when talking to the local LiteLLM proxy.
-The LiteLLM Admin UI uses `UI_USERNAME` / `UI_PASSWORD`; the example above
-logs in as `local` / `sk-proxy-local`.
+The LiteLLM Admin UI is disabled by default. Current LiteLLM UI login writes
+admin session state through the LiteLLM database layer, and this project stays
+local-only without Postgres. The OpenAI/Anthropic-compatible proxy APIs still
+work normally on `http://localhost:4000`.
 
 ## Proxy
 
