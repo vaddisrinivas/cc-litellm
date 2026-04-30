@@ -229,6 +229,7 @@ test_models() {
     return
   }
   expect_contains "LiteLLM exposes chatgpt-browser" "chatgpt-browser" "$out"
+  expect_contains "LiteLLM exposes chatgpt-browser-api" "chatgpt-browser-api" "$out"
   expect_contains "LiteLLM exposes opus route" "opus" "$out"
 }
 

@@ -92,6 +92,15 @@ model_list:
       api_base: os.environ/CHATGPT_BROWSER_API_BASE
       api_key: os.environ/CHATGPT_BROWSER_API_KEY
 
+  # Optional direct Codex/ChatGPT web API provider. This bypasses the
+  # CodeWebChat DOM/copy path and uses Codex OAuth through codex-proxy, so
+  # native tool_calls work when the upstream account/model supports them.
+  - model_name: chatgpt-browser-api
+    litellm_params:
+      model: openai/gpt-5.4-mini
+      api_base: os.environ/CHATGPT_BROWSER_API_DIRECT_BASE
+      api_key: os.environ/CHATGPT_BROWSER_API_DIRECT_KEY
+
 litellm_settings:
   drop_params: true
   set_verbose: false

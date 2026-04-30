@@ -20,6 +20,7 @@ provider policy:
 - Sonnet / Codex-level: `claude-sonnet-4-6`, `gpt-5.3-codex`, `gpt-5.4` -> GLM
 - Lightweight/default routes: `claude-haiku-4-5`, `gpt-5.2`, `gpt-54-nano` -> Azure AI Foundry / Azure OpenAI `gpt-54-nano`
 - Optional browser-backed provider: `chatgpt-browser` -> local OpenAI-compatible shim -> CodeWebChat -> logged-in `chatgpt.com`
+- Optional direct Codex OAuth provider: `chatgpt-browser-api` -> LiteLLM -> `codex-proxy` -> `chatgpt.com/backend-api/codex/responses`
 
 ## Requirements
 
@@ -28,6 +29,7 @@ provider policy:
 - Azure AI Foundry key and endpoints for Kimi and `gpt-54-nano`
 - Z.ai key for GLM
 - Optional for `chatgpt-browser`: CodeWebChat browser extension connected to a logged-in ChatGPT tab
+- Optional for `chatgpt-browser-api`: Codex/ChatGPT OAuth present at `~/.codex/auth.json`
 
 ## Install
 
@@ -71,6 +73,10 @@ CHATGPT_BROWSER_PING_INTERVAL=10
 CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=0
 CHATGPT_BROWSER_COMPACT_EVERY=30
 CHATGPT_BROWSER_SESSION_STATE_PATH=/data/session_state.json
+
+# Optional direct API provider
+CHATGPT_BROWSER_API_DIRECT_BASE=http://codex-oauth-proxy:8080/v1
+CHATGPT_BROWSER_API_DIRECT_KEY=pwd
 ```
 
 `LITELLM_MASTER_KEY` can be any local token. Claude uses it as
@@ -172,6 +178,48 @@ curl http://localhost:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"chatgpt-browser","messages":[{"role":"user","content":"Say ok"}]}'
 ```
+
+## Optional Direct ChatGPT/Codex API Provider
+
+`chatgpt-browser-api` is a separate explicit model alias. It does not use the
+Chrome extension or the ChatGPT DOM. It uses
+[`icebear0828/codex-proxy`](https://github.com/icebear0828/codex-proxy) inside
+Docker, imports the local Codex CLI OAuth token from `~/.codex/auth.json`, and
+exposes an OpenAI-compatible API to LiteLLM.
+
+Use this route when tool calls matter. In local testing it returned native
+OpenAI `tool_calls` for an OpenAI `tools` request, while the DOM-backed
+`chatgpt-browser` route can only shape tool calls by prompt and parse JSON back
+out of normal ChatGPT text.
+
+Start/import:
+
+```bash
+bash scripts/import_codex_oauth.sh
+docker compose --env-file ~/.config/cc-litellm/.env up -d
+```
+
+Smoke test direct:
+
+```bash
+curl http://localhost:18889/v1/chat/completions \
+  -H 'Authorization: Bearer pwd' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-5.4-mini","messages":[{"role":"user","content":"Reply exactly: ok"}]}'
+```
+
+Smoke test through LiteLLM:
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H 'Authorization: Bearer sk-proxy-local' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"chatgpt-browser-api","messages":[{"role":"user","content":"Reply exactly: ok"}]}'
+```
+
+The `codex_oauth_proxy_data` Docker volume persists imported account state.
+If the token expires or you log out of Codex, run
+`bash scripts/import_codex_oauth.sh` again after refreshing Codex auth.
 
 ## Test Gates
 

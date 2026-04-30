@@ -1,4 +1,17 @@
 services:
+  codex-oauth-proxy:
+    image: ghcr.io/icebear0828/codex-proxy:latest
+    restart: unless-stopped
+    ports:
+      - "18889:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - CODEX_HOME=/codex-auth
+    volumes:
+      - codex_oauth_proxy_data:/app/data
+      - ${CODEX_OAUTH_HOME:-${HOME}/.config/cc-litellm/codex-oauth}:/codex-auth:ro
+
   chatgpt-browser-proxy:
     build:
       context: ./chatgpt_browser_proxy
@@ -27,6 +40,7 @@ services:
     restart: always
     depends_on:
       - chatgpt-browser-proxy
+      - codex-oauth-proxy
     ports:
       - "4000:4000"
     environment:
@@ -41,9 +55,12 @@ services:
       - ZAI_API_KEY=${ZAI_API_KEY}
       - CHATGPT_BROWSER_API_BASE=${CHATGPT_BROWSER_API_BASE:-http://chatgpt-browser-proxy:8080/v1}
       - CHATGPT_BROWSER_API_KEY=${CHATGPT_BROWSER_API_KEY:-sk-chatgpt-browser-local}
+      - CHATGPT_BROWSER_API_DIRECT_BASE=${CHATGPT_BROWSER_API_DIRECT_BASE:-http://codex-oauth-proxy:8080/v1}
+      - CHATGPT_BROWSER_API_DIRECT_KEY=${CHATGPT_BROWSER_API_DIRECT_KEY:-pwd}
     volumes:
       - ./config.yaml:/app/config.yaml
     command: [ "--config", "/app/config.yaml", "--port", "4000" ]
 
 volumes:
   chatgpt_browser_state:
+  codex_oauth_proxy_data:
