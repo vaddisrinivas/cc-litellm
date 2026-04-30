@@ -41,6 +41,102 @@ if [[ -f "$CHATGPT_ADAPTER" ]]; then
   perl -0pi -e 's/if \(!copy_button\) \{\n\s*report_initialization_error\(\{\n\s*function_name: '\''chatgpt\.perform_copy'\'',\n\s*log_message: '\''Copy button not found'\''\n\s*\}\)\n\s*return\n\s*\}\n\s*copy_button\.click\(\)/copy_button?.click()/s' "$CHATGPT_ADAPTER"
 fi
 
+python3 - "$CODEWEBCHAT_HOME" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+root = Path(sys.argv[1])
+
+types = root / "packages/shared/src/types/websocket-message.ts"
+text = types.read_text()
+if "ChatGPTApiFetchMessage" not in text:
+    text = text.replace(
+        "export type ClientIdAssignmentMessage = {\n  action: 'client-id-assignment'\n  client_id: number\n}\n",
+        "export type ClientIdAssignmentMessage = {\n  action: 'client-id-assignment'\n  client_id: number\n}\n\n"
+        "export type ChatGPTApiFetchMessage = {\n"
+        "  action: 'chatgpt-api-fetch'\n"
+        "  client_id: number\n"
+        "  url: string\n"
+        "  method?: string\n"
+        "  headers?: Record<string, string>\n"
+        "  body?: string\n"
+        "}\n\n"
+        "export type ChatGPTApiResponseMessage = {\n"
+        "  action: 'chatgpt-api-response'\n"
+        "  client_id: number\n"
+        "  ok: boolean\n"
+        "  status: number\n"
+        "  status_text: string\n"
+        "  content_type?: string\n"
+        "  body: string\n"
+        "}\n",
+    )
+    text = text.replace(
+        "  | ClientIdAssignmentMessage\n  | ApplyChatResponseMessage",
+        "  | ClientIdAssignmentMessage\n  | ApplyChatResponseMessage\n  | ChatGPTApiFetchMessage\n  | ChatGPTApiResponseMessage",
+    )
+    types.write_text(text)
+
+handler = root / "apps/browser/src/background/message-handler.ts"
+text = handler.read_text()
+if "ChatGPTApiFetchMessage" not in text:
+    text = text.replace(
+        "  InitializeChatMessage,\n  ApplyChatResponseMessage\n} from '@shared/types/websocket-message'",
+        "  InitializeChatMessage,\n  ApplyChatResponseMessage,\n  ChatGPTApiFetchMessage,\n  ChatGPTApiResponseMessage\n} from '@shared/types/websocket-message'",
+    )
+    text = text.replace(
+        "  if (message.action == 'initialize-chat') {\n    handle_initialize_chat_message(message as InitializeChatMessage)\n  }\n}\n",
+        "  if (message.action == 'initialize-chat') {\n"
+        "    handle_initialize_chat_message(message as InitializeChatMessage)\n"
+        "  } else if (message.action == 'chatgpt-api-fetch') {\n"
+        "    handle_chatgpt_api_fetch_message(message as ChatGPTApiFetchMessage)\n"
+        "  }\n"
+        "}\n\n"
+        "const handle_chatgpt_api_fetch_message = async (\n"
+        "  message: ChatGPTApiFetchMessage\n"
+        ") => {\n"
+        "  const headers = new Headers(message.headers || {})\n"
+        "  try {\n"
+        "    const response = await fetch(message.url, {\n"
+        "      method: message.method || 'POST',\n"
+        "      headers,\n"
+        "      body: message.body,\n"
+        "      credentials: 'include'\n"
+        "    })\n"
+        "    const body = await response.text()\n"
+        "    send_message_to_server({\n"
+        "      action: 'chatgpt-api-response',\n"
+        "      client_id: message.client_id,\n"
+        "      ok: response.ok,\n"
+        "      status: response.status,\n"
+        "      status_text: response.statusText,\n"
+        "      content_type: response.headers.get('content-type') || undefined,\n"
+        "      body\n"
+        "    } as ChatGPTApiResponseMessage)\n"
+        "  } catch (error) {\n"
+        "    send_message_to_server({\n"
+        "      action: 'chatgpt-api-response',\n"
+        "      client_id: message.client_id,\n"
+        "      ok: false,\n"
+        "      status: 0,\n"
+        "      status_text: error instanceof Error ? error.message : String(error),\n"
+        "      body: ''\n"
+        "    } as ChatGPTApiResponseMessage)\n"
+        "  }\n"
+        "}\n",
+    )
+    handler.write_text(text)
+
+manifest = root / "apps/browser/src/manifest.json"
+data = json.loads(manifest.read_text())
+hosts = data.setdefault("host_permissions", [])
+for host in ["https://chatgpt.com/*"]:
+    if host not in hosts:
+        hosts.append(host)
+manifest.write_text(json.dumps(data, indent=2) + "\n")
+PY
+
 cd "$CODEWEBCHAT_HOME"
 "${PNPM[@]}" install
 "${PNPM[@]}" --dir apps/browser build

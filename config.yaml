@@ -92,6 +92,14 @@ model_list:
       api_base: os.environ/CHATGPT_BROWSER_API_BASE
       api_key: os.environ/CHATGPT_BROWSER_API_KEY
 
+  # Browser-session API route. The Chrome extension background service worker
+  # performs fetch() to chatgpt.com with the logged-in browser session.
+  - model_name: chatgpt-browser-js
+    litellm_params:
+      model: openai/chatgpt-browser-js
+      api_base: os.environ/CHATGPT_BROWSER_API_BASE
+      api_key: os.environ/CHATGPT_BROWSER_API_KEY
+
   # Optional direct Codex/ChatGPT web API provider. This bypasses the
   # CodeWebChat DOM/copy path and uses Codex OAuth through codex-proxy, so
   # native tool_calls work when the upstream account/model supports them.

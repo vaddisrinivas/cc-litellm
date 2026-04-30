@@ -21,6 +21,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 
 MODEL_NAME = os.getenv("CHATGPT_BROWSER_MODEL", "chatgpt-browser")
+JS_MODEL_NAME = os.getenv("CHATGPT_BROWSER_JS_MODEL", "chatgpt-browser-js")
+JS_UPSTREAM_MODEL = os.getenv("CHATGPT_BROWSER_JS_UPSTREAM_MODEL", "gpt-5.4-mini")
+JS_API_URL = os.getenv("CHATGPT_BROWSER_JS_API_URL", "https://chatgpt.com/backend-api/codex/responses")
 WS_URL = os.getenv("CHATGPT_BROWSER_WS_URL", "ws://host.docker.internal:55155")
 WS_TOKEN = os.getenv("CHATGPT_BROWSER_WS_TOKEN", "gemini-coder-vscode")
 BROWSER_WS_TOKEN = os.getenv("CHATGPT_BROWSER_EXTENSION_WS_TOKEN", "gemini-coder")
@@ -48,6 +51,7 @@ app.add_middleware(
 browser_clients: dict[int, WebSocket] = {}
 browser_locks: dict[int, asyncio.Lock] = {}
 pending_responses: dict[int, tuple[int, asyncio.Future[str]]] = {}
+pending_api_responses: dict[int, tuple[int, asyncio.Future[dict[str, Any]]]] = {}
 browser_counter = 0
 client_counter = 0
 state_lock = asyncio.Lock()
@@ -175,6 +179,38 @@ def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
             body = body + "\n" + "\n".join(tool_blocks) if body else "\n".join(tool_blocks)
         parts.append(f"[{prefix}]\n{body}")
     return "\n\n".join(parts).strip()
+
+
+def messages_to_responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    instructions: list[str] = []
+    input_items: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role", "user")
+        text, tool_blocks = _message_to_text(message)
+        if tool_blocks:
+            text = (text + "\n" if text else "") + "\n".join(tool_blocks)
+        if not text:
+            continue
+        if role == "system":
+            instructions.append(text)
+            continue
+        if role == "tool":
+            input_items.append(
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"[Tool result]\n{text}"}],
+                }
+            )
+            continue
+        input_items.append(
+            {
+                "type": "message",
+                "role": "assistant" if role == "assistant" else "user",
+                "content": [{"type": "input_text", "text": text}],
+            }
+        )
+    return "\n\n".join(instructions), input_items
 
 
 def _normalize_tool(tool: dict[str, Any]) -> dict[str, Any]:
@@ -613,6 +649,135 @@ async def query_chatgpt_embedded(prompt: str, session_id: str | None, new_sessio
             pending_responses.pop(client_id, None)
 
 
+def _codex_request_from_chat(body: dict[str, Any]) -> dict[str, Any]:
+    messages = body.get("messages", [])
+    if not isinstance(messages, list):
+        messages = []
+    instructions, input_items = messages_to_responses_input(messages)
+    if not input_items:
+        prompt = body.get("prompt") or body.get("input") or ""
+        input_items = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": str(prompt)}],
+            }
+        ]
+    request_body: dict[str, Any] = {
+        "model": JS_UPSTREAM_MODEL,
+        "instructions": instructions or "You are a helpful coding assistant.",
+        "input": input_items,
+        "tools": body.get("tools") or [],
+        "tool_choice": body.get("tool_choice", "auto"),
+        "parallel_tool_calls": bool(body.get("parallel_tool_calls", False)),
+        "store": False,
+        "stream": True,
+        "include": [],
+    }
+    if body.get("reasoning"):
+        request_body["reasoning"] = body["reasoning"]
+    return request_body
+
+
+def _parse_codex_sse(raw: str) -> tuple[str, list[dict[str, Any]]]:
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    seen_tool_ids: set[str] = set()
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        event_type = event.get("type")
+        if event_type == "response.output_text.delta" and isinstance(event.get("delta"), str):
+            text_parts.append(event["delta"])
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if item.get("type") == "function_call":
+            call_id = str(item.get("call_id") or item.get("id") or f"call_{uuid.uuid4().hex}")
+            if call_id in seen_tool_ids:
+                continue
+            seen_tool_ids.add(call_id)
+            raw_args = item.get("arguments", {})
+            if isinstance(raw_args, str):
+                try:
+                    args = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError:
+                    args = {"raw": raw_args}
+            elif isinstance(raw_args, dict):
+                args = raw_args
+            else:
+                args = {}
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "name": str(item.get("name") or ""),
+                    "arguments": args,
+                }
+            )
+        if event_type == "response.output_item.done" and isinstance(item.get("content"), list):
+            for content in item["content"]:
+                if isinstance(content, dict) and isinstance(content.get("text"), str):
+                    text_parts.append(content["text"])
+
+    return clean_response_text("".join(text_parts)), [call for call in tool_calls if call["name"]]
+
+
+async def query_chatgpt_api_embedded(body: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    browser_id, browser = await _select_embedded_browser()
+    client_id = await _next_client_id()
+    lock = _get_browser_lock(browser_id)
+    async with lock:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        pending_api_responses[client_id] = (browser_id, future)
+        request_body = _codex_request_from_chat(body)
+        try:
+            log(
+                "sending chatgpt-api-fetch "
+                f"client_id={client_id} browser_id={browser_id} url={JS_API_URL} "
+                f"body_chars={len(json.dumps(request_body, ensure_ascii=False))}"
+            )
+            await browser.send_text(
+                json.dumps(
+                    {
+                        "action": "chatgpt-api-fetch",
+                        "client_id": client_id,
+                        "url": JS_API_URL,
+                        "method": "POST",
+                        "headers": {
+                            "accept": "text/event-stream",
+                            "content-type": "application/json",
+                            "openai-beta": "responses=experimental",
+                            "originator": "codex_cli_rs",
+                        },
+                        "body": json.dumps(request_body, ensure_ascii=False),
+                    }
+                )
+            )
+            response = await asyncio.wait_for(future, timeout=REQUEST_TIMEOUT)
+            status = int(response.get("status", 0))
+            raw_body = str(response.get("body", ""))
+            if not response.get("ok"):
+                raise RuntimeError(f"ChatGPT browser JS API returned HTTP {status}: {raw_body[:1000]}")
+            text, tool_calls = _parse_codex_sse(raw_body)
+            if not text and not tool_calls:
+                raise RuntimeError(f"ChatGPT browser JS API returned no parseable output: {raw_body[:1000]}")
+            log(
+                f"received chatgpt-api-response client_id={client_id} "
+                f"status={status} text_chars={len(text)} tool_calls={len(tool_calls)}"
+            )
+            return text, tool_calls
+        finally:
+            pending_api_responses.pop(client_id, None)
+
+
 async def query_chatgpt(prompt: str, session_id: str | None, new_session: bool) -> str:
     if WS_URL.lower() in ("", "embedded", "internal"):
         return await query_chatgpt_embedded(prompt, session_id, new_session)
@@ -661,6 +826,7 @@ async def health() -> dict[str, Any]:
         "auth_enabled": bool(API_KEY),
         "connected_browsers": sorted(browser_clients),
         "pending_requests": len(pending_responses),
+        "pending_api_requests": len(pending_api_responses),
         "active_sessions": len(session_states),
     }
 
@@ -751,6 +917,12 @@ async def codewebchat_websocket(websocket: WebSocket) -> None:
                 future = pending[1] if pending else None
                 if future and not future.done():
                     future.set_result(str(data.get("response", "")))
+            elif data.get("action") == "chatgpt-api-response":
+                client_id = int(data.get("client_id", 0))
+                pending = pending_api_responses.get(client_id)
+                future = pending[1] if pending else None
+                if future and not future.done():
+                    future.set_result(data)
     except WebSocketDisconnect:
         pass
     finally:
@@ -762,6 +934,9 @@ async def codewebchat_websocket(websocket: WebSocket) -> None:
             for client_id, (pending_browser_id, future) in list(pending_responses.items()):
                 if pending_browser_id == browser_id and not future.done():
                     future.set_exception(RuntimeError(f"Browser {browser_id} disconnected before responding"))
+            for client_id, (pending_browser_id, future) in list(pending_api_responses.items()):
+                if pending_browser_id == browser_id and not future.done():
+                    future.set_exception(RuntimeError(f"Browser {browser_id} disconnected before API response"))
 
 
 @app.get("/v1/models")
@@ -777,7 +952,13 @@ async def models(request: Request) -> JSONResponse:
                     "object": "model",
                     "created": 0,
                     "owned_by": "chatgpt-browser",
-                }
+                },
+                {
+                    "id": JS_MODEL_NAME,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "chatgpt-browser-js",
+                },
             ],
         }
     )
@@ -807,6 +988,68 @@ async def _handle_request(request: Request, body: dict[str, Any], is_responses_a
 async def _chat_completions_impl(request: Request):
     body = await request.json()
     model = body.get("model", MODEL_NAME)
+    if model == JS_MODEL_NAME:
+        if not _auth_ok(request):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+        created = int(time.time())
+        try:
+            response_text, tool_calls = await query_chatgpt_api_embedded(body)
+        except Exception as exc:
+            raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
+
+        if body.get("stream", False):
+            async def event_stream():
+                if tool_calls:
+                    delta = {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "index": i,
+                                "id": call["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": call["name"],
+                                    "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                                },
+                            }
+                            for i, call in enumerate(tool_calls)
+                        ],
+                    }
+                    finish_reason = "tool_calls"
+                else:
+                    delta = {"role": "assistant", "content": response_text}
+                    finish_reason = "stop"
+                yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]})}\n\n"
+                yield f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'created': created, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': finish_reason}]})}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+        message: dict[str, Any] = {"role": "assistant", "content": None if tool_calls else response_text}
+        finish_reason = "tool_calls" if tool_calls else "stop"
+        if tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                    },
+                }
+                for call in tool_calls
+            ]
+        return JSONResponse(
+            {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+                "usage": _usage(messages_to_prompt(body.get("messages", [])), response_text),
+            }
+        )
 
     req_info = await _handle_request(request, body, is_responses_api=False)
     prompt = req_info["prompt"]

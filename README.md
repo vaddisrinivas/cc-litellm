@@ -20,6 +20,7 @@ provider policy:
 - Sonnet / Codex-level: `claude-sonnet-4-6`, `gpt-5.3-codex`, `gpt-5.4` -> GLM
 - Lightweight/default routes: `claude-haiku-4-5`, `gpt-5.2`, `gpt-54-nano` -> Azure AI Foundry / Azure OpenAI `gpt-54-nano`
 - Optional browser-backed provider: `chatgpt-browser` -> local OpenAI-compatible shim -> CodeWebChat -> logged-in `chatgpt.com`
+- Optional browser-JS API provider: `chatgpt-browser-js` -> local shim -> CodeWebChat extension background `fetch()` -> `chatgpt.com/backend-api`
 - Optional direct Codex OAuth provider: `chatgpt-browser-api` -> LiteLLM -> `codex-proxy` -> `chatgpt.com/backend-api/codex/responses`
 
 ## Requirements
@@ -29,6 +30,7 @@ provider policy:
 - Azure AI Foundry key and endpoints for Kimi and `gpt-54-nano`
 - Z.ai key for GLM
 - Optional for `chatgpt-browser`: CodeWebChat browser extension connected to a logged-in ChatGPT tab
+- Optional for `chatgpt-browser-js`: the patched CodeWebChat browser extension connected to a logged-in ChatGPT tab
 - Optional for `chatgpt-browser-api`: Codex/ChatGPT OAuth present at `~/.codex/auth.json`
 
 ## Install
@@ -73,6 +75,11 @@ CHATGPT_BROWSER_PING_INTERVAL=10
 CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=0
 CHATGPT_BROWSER_COMPACT_EVERY=30
 CHATGPT_BROWSER_SESSION_STATE_PATH=/data/session_state.json
+
+# Optional browser-JS API provider
+CHATGPT_BROWSER_JS_MODEL=chatgpt-browser-js
+CHATGPT_BROWSER_JS_UPSTREAM_MODEL=gpt-5.4-mini
+CHATGPT_BROWSER_JS_API_URL=https://chatgpt.com/backend-api/codex/responses
 
 # Optional direct API provider
 CHATGPT_BROWSER_API_DIRECT_BASE=http://codex-oauth-proxy:8080/v1
@@ -159,6 +166,15 @@ Session behavior:
   `function_call` items. If ChatGPT returns plain text instead of that envelope,
   the shim returns the text normally with no `tool_calls`. Native Claude Code
   tool execution remains strongest on the Kimi/GLM/nano routes.
+
+`chatgpt-browser-js` uses the same extension connection, but instead of typing
+into the ChatGPT DOM it sends a WebSocket request to the extension background
+service worker. The extension calls `fetch()` against
+`CHATGPT_BROWSER_JS_API_URL` with `credentials: "include"`, so the request uses
+the logged-in browser session. The proxy parses the returned SSE into an
+OpenAI-compatible chat completion. Reload the unpacked Chrome extension after
+running `bash scripts/setup_codewebchat.sh`, because Manifest V3 host
+permissions and background code do not hot-reload automatically.
 
 Smoke test the local shim directly:
 

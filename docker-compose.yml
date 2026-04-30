@@ -21,6 +21,9 @@ services:
       - "55155:8080"
     environment:
       - CHATGPT_BROWSER_MODEL=${CHATGPT_BROWSER_MODEL:-chatgpt-browser}
+      - CHATGPT_BROWSER_JS_MODEL=${CHATGPT_BROWSER_JS_MODEL:-chatgpt-browser-js}
+      - CHATGPT_BROWSER_JS_UPSTREAM_MODEL=${CHATGPT_BROWSER_JS_UPSTREAM_MODEL:-gpt-5.4-mini}
+      - CHATGPT_BROWSER_JS_API_URL=${CHATGPT_BROWSER_JS_API_URL:-https://chatgpt.com/backend-api/codex/responses}
       - CHATGPT_BROWSER_WS_URL=${CHATGPT_BROWSER_WS_URL:-embedded}
       - CHATGPT_BROWSER_WS_TOKEN=${CHATGPT_BROWSER_WS_TOKEN:-gemini-coder-vscode}
       - CHATGPT_BROWSER_EXTENSION_WS_TOKEN=${CHATGPT_BROWSER_EXTENSION_WS_TOKEN:-gemini-coder}
