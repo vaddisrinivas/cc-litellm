@@ -1,157 +1,205 @@
 # cc-litellm
 
-A Claude Code plugin that automatically falls back to Azure AI when your Anthropic credits are exhausted — without losing your session or doing anything manually.
+Local-only Claude Code / `claude -p` routing through LiteLLM, with Azure AI
+Foundry as the main provider surface.
 
-## How it works
+For now, installation is Claude-only. The scripts use an explicit target (`claude`)
+so a Codex target can be added later without changing the Claude behavior.
 
-Claude Code fires a `StopFailure` event with reason `billing_error` when Anthropic credits run out. This plugin hooks into that event to:
+The only thing installed locally is a Docker Compose managed LiteLLM proxy on
+`localhost:4000` plus a Claude `SessionStart` hook that keeps it alive. No
+global shell env, Codex config, Cursor config, LaunchAgent, or local LiteLLM
+Python runtime is required.
 
-1. Rewrite `~/.claude/settings.json` to route Claude Code through a local LiteLLM proxy
-2. Pop a macOS notification: "Credits exhausted — restart Claude Code"
-3. On restart, the proxy transparently forwards requests to Azure AI
+## Routing
 
-When you top up credits, run `bash install.sh` to reset back to direct Anthropic.
+LiteLLM receives Claude model names and maps them to your configured local
+provider policy:
 
-```
-Normal:
-  Claude Code ──► Anthropic API (direct, zero overhead)
-
-Credits exhausted:
-  StopFailure/billing_error hook fires
-    ├── writes ANTHROPIC_BASE_URL → ~/.claude/settings.json
-    └── macOS notification: "Credits exhausted — restart Claude Code"
-
-After restart:
-  Claude Code ──► LiteLLM proxy (localhost:4000) ──► Azure AI
-```
+- Opus-level: `claude-opus-4-6`, `gpt-5.5` -> Kimi on Azure AI Foundry
+- Sonnet / Codex-level: `claude-sonnet-4-6`, `gpt-5.3-codex`, `gpt-5.4` -> GLM
+- Lightweight/default routes: `claude-haiku-4-5`, `gpt-5.2`, `gpt-54-nano` -> Azure AI Foundry / Azure OpenAI `gpt-54-nano`
+- Optional browser-backed provider: `chatgpt-browser` -> local OpenAI-compatible shim -> CodeWebChat -> logged-in `chatgpt.com`
 
 ## Requirements
 
-- macOS (notifications via `osascript`)
-- Python 3 (stdlib only — for the alert webhook)
-- [Claude Code](https://claude.ai/code)
-- An Anthropic API key
-- An Azure AI Services resource with a deployed chat model
-- LiteLLM **or** Docker (to run the proxy — see [Proxy Setup](#proxy-setup))
+- Claude Code / Claude CLI
+- Docker Desktop
+- Azure AI Foundry key and endpoints for Kimi and `gpt-54-nano`
+- Z.ai key for GLM
+- Optional for `chatgpt-browser`: CodeWebChat browser extension connected to a logged-in ChatGPT tab
 
 ## Install
 
-### Via Claude Code plugin system
-
 ```bash
-claude plugin marketplace add vaddisrinivas/cc-litellm
-claude plugin install cc-litellm
-
-# Required after install — sets up credentials and starts services
-CACHE=$(ls -d ~/.claude/plugins/cache/vaddisrinivas-cc-litellm/cc-litellm/*/  2>/dev/null || \
-        ls -d ~/.claude/plugins/cache/cc-litellm/cc-litellm/*/ 2>/dev/null)
-bash "$CACHE/install.sh"
+bash install.sh claude
 ```
 
-### Manual
+The install script:
 
-```bash
-git clone https://github.com/your-username/cc-litellm
-cd cc-litellm
-bash install.sh
-```
+1. Creates or updates `~/.config/cc-litellm/.env`
+2. Ensures Docker Desktop is running
+3. Writes only Claude settings in `~/.claude/settings.json`
+4. Adds a Claude `SessionStart` hook to keep Docker Compose LiteLLM running
+5. Starts LiteLLM on `http://localhost:4000` and the optional ChatGPT browser shim on `http://localhost:18080`
+
+It does not write Codex config, Cursor config, `launchctl`, or shell startup files.
+Plain `claude -p` uses the configured Claude default, `opus[1m]`, which maps
+to Kimi. Delegation wrappers should pass `--model claude-sonnet-4-6` explicitly
+when they want the faster GLM route.
 
 ## Credentials
 
-Fill in `~/.config/cc-litellm/.env` (created by `install.sh`):
+Fill in `~/.config/cc-litellm/.env`:
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...
-AZURE_AI_API_KEY=your-azure-ai-api-key
-AZURE_AI_API_BASE=https://your-resource.cognitiveservices.azure.com/models
-LITELLM_MASTER_KEY=sk-proxy-local   # any string — local proxy auth token
+AZURE_AI_FOUNDRY_API_KEY=your-azure-ai-foundry-api-key
+AZURE_AI_FOUNDRY_KIMI_API_BASE=https://your-resource.services.ai.azure.com/projects/your-project/deployments/kimi-k-2-6
+AZURE_AI_FOUNDRY_NANO_API_BASE=https://your-resource.openai.azure.com/
+AZURE_AI_FOUNDRY_API_VERSION=2025-04-01-preview
+LITELLM_MASTER_KEY=sk-proxy-local
+ZAI_API_KEY=your-zai-api-key
+
+# Optional browser provider
+CHATGPT_BROWSER_API_BASE=http://chatgpt-browser-proxy:8080/v1
+CHATGPT_BROWSER_API_KEY=sk-chatgpt-browser-local
+CHATGPT_BROWSER_WS_URL=embedded
+CHATGPT_BROWSER_WS_TOKEN=gemini-coder-vscode
+CHATGPT_BROWSER_EXTENSION_WS_TOKEN=gemini-coder
+CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=1
 ```
 
-Credentials live in `~/.config/cc-litellm/` — separate from the plugin code, never committed.
+`LITELLM_MASTER_KEY` can be any local token. Claude uses it as
+`ANTHROPIC_AUTH_TOKEN` when talking to the local LiteLLM proxy.
 
-## Proxy Setup
+## Proxy
 
-The proxy runs on `localhost:4000`. You need one of:
-
-### Option A — LiteLLM CLI (no Docker)
+The `SessionStart` hook starts LiteLLM automatically through Docker Compose:
 
 ```bash
-pip install 'litellm[proxy]'
+docker compose --env-file ~/.config/cc-litellm/.env up -d
 ```
+Keep Docker Desktop running.
 
-The `SessionStart` hook starts the proxy automatically on each Claude Code session.
+## Optional ChatGPT Browser Provider
 
-### Option B — Docker
+`chatgpt-browser` is an explicit model alias. It is not the default and is not a fallback for Opus/Kimi. No model name or route resolves to `chatgpt-browser` unless the caller explicitly requests `model=chatgpt-browser`.
+
+It uses CodeWebChat's existing browser harness:
+
+1. Install and build CodeWebChat:
+
+   ```bash
+   bash scripts/setup_codewebchat.sh
+   ```
+
+2. Load the CodeWebChat browser extension in Chrome from:
+
+   ```text
+   ~/.config/cc-litellm/CodeWebChat/apps/browser/dist
+   ```
+
+   If you cloned CodeWebChat somewhere else, load the `apps/browser/dist`
+   directory from that clone instead.
+
+3. Open `https://chatgpt.com` and log in
+4. Run `bash install.sh claude` so Docker rebuilds and starts the local shim
+5. Confirm the shim is ready with `curl http://localhost:18080/ready`
+
+The Docker shim exposes a CodeWebChat-compatible WebSocket endpoint on
+`ws://localhost:55155`. In the default `CHATGPT_BROWSER_WS_URL=embedded` mode,
+that endpoint is provided by this project's Docker shim, so the browser
+extension connects directly here. You do not need to run CodeWebChat's original
+VS Code/editor WebSocket server unless you set `CHATGPT_BROWSER_WS_URL` to an
+external server.
+
+Session behavior:
+
+- By default, requests without a session id open a new ChatGPT chat.
+- To resume a browser chat, pass the same session id using either
+  `X-Session-Id`, `X-ChatGPT-Browser-Session-Id`, request body `session_id`,
+  `conversation_id`, `metadata.session_id`, `metadata.conversation_id`, or
+  `metadata.claude_session_id`.
+- To force a fresh ChatGPT tab for a known id, pass `new_session: true` or
+  `X-New-Session: true`.
+- Streaming is OpenAI-compatible but currently emitted after the browser
+  response completes; token-level streaming depends on deeper ChatGPT DOM
+  streaming support.
+- Tool calling is best-effort for this browser-backed route. The shim injects
+  OpenAI tool schemas into the prompt, asks ChatGPT for a strict
+  `{"tool_calls":[{"name":"...","arguments":{...}}]}` envelope, and maps a
+  parseable envelope back to OpenAI-compatible `tool_calls` or Responses API
+  `function_call` items. If ChatGPT returns plain text instead of that envelope,
+  the shim returns the text normally with no `tool_calls`. Native Claude Code
+  tool execution remains strongest on the Kimi/GLM/nano routes.
+
+Smoke test the local shim directly:
 
 ```bash
-# Docker Desktop must be running
-# The SessionStart hook handles the rest
+curl http://localhost:18080/health
+curl http://localhost:18080/v1/chat/completions \
+  -H 'Authorization: Bearer sk-chatgpt-browser-local' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"chatgpt-browser","session_id":"demo","messages":[{"role":"user","content":"Say ok"}]}'
 ```
 
-The hook prefers the native LiteLLM CLI if installed; falls back to Docker otherwise.
-
-## Fallback Model
-
-Edit `config.yaml` to set your Azure model:
-
-```yaml
-- model_name: your-model       # ← deployed model name in Azure AI Studio
-  litellm_params:
-    model: azure_ai/your-model
-    api_base: os.environ/AZURE_AI_API_BASE
-    api_key: os.environ/AZURE_AI_API_KEY
-```
-
-LiteLLM supports many other providers too (OpenAI, Bedrock, Vertex, Ollama). See [LiteLLM docs](https://docs.litellm.ai) for the full list.
-
-## Files
-
-```
-├── .claude-plugin/
-│   ├── plugin.json          # Claude Code plugin manifest
-│   └── marketplace.json     # Marketplace metadata
-├── hooks/
-│   └── hooks.json           # SessionStart + StopFailure/billing_error hooks
-├── scripts/
-│   ├── session_start.sh     # Keeps proxy + alert server alive on session start
-│   └── billing_error.sh     # Activates proxy + sends notification on credit exhaustion
-├── config.yaml              # LiteLLM model list and fallback routing
-├── docker-compose.yml       # Optional: run LiteLLM via Docker
-├── alert.py                 # Webhook server → macOS notifications (port 4001)
-├── .env.example             # Credential template (copied to ~/.config/cc-litellm/.env)
-└── install.sh               # Setup script
-```
-
-## Switching back to direct Anthropic
-
-Once credits are topped up:
+Smoke test through LiteLLM:
 
 ```bash
-bash install.sh
+curl http://localhost:4000/v1/chat/completions \
+  -H 'Authorization: Bearer sk-proxy-local' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"chatgpt-browser","messages":[{"role":"user","content":"Say ok"}]}'
 ```
 
-This clears `ANTHROPIC_BASE_URL` from `~/.claude/settings.json`.
+## Test Gates
+
+`scripts/test_e2e.sh` is mode-based so normal validation does not burn
+ChatGPT browser quota:
+
+```bash
+# No ChatGPT calls. Use this before every commit.
+TEST_MODE=offline bash scripts/test_e2e.sh
+
+# Small pre-post sanity check: direct browser, LiteLLM, Claude browser.
+TEST_MODE=smoke bash scripts/test_e2e.sh
+
+# Full launch gate after a cooldown.
+TEST_MODE=launch BROWSER_TEST_DELAY_SECONDS=30 MAX_BROWSER_CALLS=20 bash scripts/test_e2e.sh
+```
+
+The default mode is `offline`. Browser modes enforce a call budget with
+`MAX_BROWSER_CALLS` and skip remaining browser-heavy tests if a response looks
+rate-limited.
+
+## Privacy
+
+Do not paste raw logs into public issues without checking them first. Docker
+logs, `~/.config/cc-litellm` logs, Claude debug output, and browser-provider
+responses can include local paths, session identifiers, prompts, or provider
+error text. Redact personal paths, account identifiers, and tokens before
+sharing.
+
+If you want to use CodeWebChat's original editor-side WebSocket server instead
+of the embedded bridge, set `CHATGPT_BROWSER_WS_URL` in
+`~/.config/cc-litellm/.env` to something like
+`ws://host.docker.internal:55155`.
+
+## Uninstall
+
+```bash
+bash uninstall.sh claude
+```
+
+This removes the cc-litellm Claude hook and Claude proxy environment from
+`~/.claude/settings.json`, stops the local proxy, and leaves credentials in
+`~/.config/cc-litellm/.env`.
 
 ## Troubleshooting
 
-**Check proxy logs**
 ```bash
-# LiteLLM CLI
 tail -f ~/.config/cc-litellm/litellm.log
-
-# Docker
 docker compose logs litellm
+docker compose logs chatgpt-browser-proxy
+grep -A5 '"env"' ~/.claude/settings.json
 ```
-
-**Test the notification**
-```bash
-curl -s -X POST http://localhost:4001 \
-  -H "Content-Type: application/json" \
-  -d '{"alert_type": "budget_crossed", "message": "test"}'
-```
-
-**Check if proxy mode is active**
-```bash
-grep -A3 '"env"' ~/.claude/settings.json
-```
-`ANTHROPIC_BASE_URL` present → proxy mode. Absent → direct Anthropic (normal).

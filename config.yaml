@@ -1,41 +1,103 @@
 model_list:
+  # Azure AI Foundry: Opus-level reasoning -> Kimi
+  - model_name: opus
+    litellm_params:
+      model: azure_ai/kimi-k-2-6
+      api_base: os.environ/AZURE_AI_FOUNDRY_KIMI_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+
+  - model_name: opus[1m]
+    litellm_params:
+      model: azure_ai/kimi-k-2-6
+      api_base: os.environ/AZURE_AI_FOUNDRY_KIMI_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+
   - model_name: claude-opus-4-6
     litellm_params:
-      model: openai/gpt-54-nano
-      api_base: os.environ/AZURE_AI_API_BASE
-      api_key: os.environ/AZURE_AI_API_KEY
+      model: azure_ai/kimi-k-2-6
+      api_base: os.environ/AZURE_AI_FOUNDRY_KIMI_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
 
+  - model_name: gpt-5.5
+    litellm_params:
+      model: azure_ai/kimi-k-2-6
+      api_base: os.environ/AZURE_AI_FOUNDRY_KIMI_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+
+  - model_name: kimi
+    litellm_params:
+      model: azure_ai/kimi-k-2-6
+      api_base: os.environ/AZURE_AI_FOUNDRY_KIMI_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+
+  # Sonnet / Codex-level work -> GLM
   - model_name: claude-sonnet-4-6
     litellm_params:
-      model: openai/gpt-54-nano
-      api_base: os.environ/AZURE_AI_API_BASE
-      api_key: os.environ/AZURE_AI_API_KEY
+      model: zai/glm-5.1
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://api.z.ai/api/coding/paas/v4
 
-  - model_name: claude-haiku-4-5-20251001
+  - model_name: gpt-5.3-codex
     litellm_params:
-      model: openai/gpt-54-nano
-      api_base: os.environ/AZURE_AI_API_BASE
-      api_key: os.environ/AZURE_AI_API_KEY
+      model: zai/glm-5.1
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://api.z.ai/api/coding/paas/v4
+
+  - model_name: gpt-5.4
+    litellm_params:
+      model: zai/glm-5.1
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://api.z.ai/api/coding/paas/v4
+
+  - model_name: glm
+    litellm_params:
+      model: zai/glm-5.1
+      api_key: os.environ/ZAI_API_KEY
+      api_base: https://api.z.ai/api/coding/paas/v4
+
+  # Azure AI Foundry / Azure OpenAI: everything else -> gpt-54-nano
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: azure/gpt-54-nano
+      api_base: os.environ/AZURE_AI_FOUNDRY_NANO_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+      api_version: os.environ/AZURE_AI_FOUNDRY_API_VERSION
+
+  - model_name: gpt-5.2
+    litellm_params:
+      model: azure/gpt-54-nano
+      api_base: os.environ/AZURE_AI_FOUNDRY_NANO_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+      api_version: os.environ/AZURE_AI_FOUNDRY_API_VERSION
 
   - model_name: gpt-54-nano
     litellm_params:
-      model: openai/gpt-54-nano
-      api_base: os.environ/AZURE_AI_API_BASE
-      api_key: os.environ/AZURE_AI_API_KEY
+      model: azure/gpt-54-nano
+      api_base: os.environ/AZURE_AI_FOUNDRY_NANO_API_BASE
+      api_key: os.environ/AZURE_AI_FOUNDRY_API_KEY
+      api_version: os.environ/AZURE_AI_FOUNDRY_API_VERSION
+
+  # Optional local browser-backed provider. This is explicit-only: callers must
+  # request chatgpt-browser. It is not a fallback for Kimi/Opus.
+  - model_name: chatgpt-browser
+    litellm_params:
+      model: openai/chatgpt-browser
+      api_base: os.environ/CHATGPT_BROWSER_API_BASE
+      api_key: os.environ/CHATGPT_BROWSER_API_KEY
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  request_timeout: 300
+
+router_settings:
+  fallbacks:
+    - claude-sonnet-4-6: [gpt-54-nano]
+    - gpt-5.3-codex: [gpt-54-nano]
+    - gpt-5.4: [gpt-54-nano]
+    - claude-haiku-4-5: [gpt-54-nano]
+    - gpt-5.2: [gpt-54-nano]
+  num_retries: 2
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-
-litellm_settings:
-  budget_duration: "30d"
-  max_budget: 50
-  use_chat_completions_url_for_anthropic_messages: true
-  drop_params: true
-  allowed_openai_params:
-    - context_management
-    - output_config
-
-alerting:
-  - "webhook"
-
-alert_webhook_url: "http://host.docker.internal:4001"

@@ -4,14 +4,14 @@
     "name": "your-username"
   },
   "metadata": {
-    "description": "Auto-fallback to Azure AI when Anthropic credits run out. Uses Claude Code's StopFailure hook — zero overhead during normal usage.",
-    "version": "1.1.4"
+    "description": "Local Claude Code / claude -p routing through LiteLLM, backed by Azure AI Foundry with Kimi, GLM, and nano aliases.",
+    "version": "1.1.6"
   },
   "plugins": [
     {
       "name": "cc-litellm",
       "source": "./",
-      "description": "Automatically switches Claude Code to a LiteLLM proxy (Azure AI) on billing_error, then notifies you via macOS notification."
+      "description": "Installs a Claude SessionStart hook that keeps the LiteLLM proxy available for Claude CLI requests."
     }
   ]
 }

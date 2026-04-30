@@ -1,7 +1,7 @@
 {
   "name": "cc-litellm",
-  "version": "1.1.5",
-  "description": "Automatically falls back to Azure AI (via LiteLLM) when Anthropic credits are exhausted. Zero overhead during normal usage.",
+  "version": "1.1.6",
+  "description": "Routes Claude Code / claude -p through a local LiteLLM proxy backed by Azure AI Foundry.",
   "author": {
     "name": "your-username",
     "url": "https://github.com/your-username"
@@ -9,9 +9,12 @@
   "repository": "https://github.com/your-username/cc-litellm",
   "license": "MIT",
   "keywords": [
-    "fallback",
+    "claude",
+    "local",
+    "foundry",
     "azure",
-    "credits",
+    "glm",
+    "kimi",
     "proxy",
     "litellm"
   ],
@@ -23,19 +26,6 @@
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/session_start.sh",
             "timeout": 8000,
-            "suppressOutput": true
-          }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "matcher": "billing_error|credit_balance|overloaded|rate_limit|usage_limit|limit_reached|capacity",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/billing_error.sh",
-            "timeout": 130000,
             "suppressOutput": true
           }
         ]

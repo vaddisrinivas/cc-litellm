@@ -1,8 +1,41 @@
 services:
+  chatgpt-browser-proxy:
+    build:
+      context: ./chatgpt_browser_proxy
+    restart: unless-stopped
+    ports:
+      - "18080:8080"
+      - "55155:8080"
+    environment:
+      - CHATGPT_BROWSER_MODEL=${CHATGPT_BROWSER_MODEL:-chatgpt-browser}
+      - CHATGPT_BROWSER_WS_URL=${CHATGPT_BROWSER_WS_URL:-embedded}
+      - CHATGPT_BROWSER_WS_TOKEN=${CHATGPT_BROWSER_WS_TOKEN:-gemini-coder-vscode}
+      - CHATGPT_BROWSER_EXTENSION_WS_TOKEN=${CHATGPT_BROWSER_EXTENSION_WS_TOKEN:-gemini-coder}
+      - CHATGPT_BROWSER_API_KEY=${CHATGPT_BROWSER_API_KEY:-sk-chatgpt-browser-local}
+      - CHATGPT_BROWSER_REQUEST_TIMEOUT=${CHATGPT_BROWSER_REQUEST_TIMEOUT:-300}
+      - CHATGPT_BROWSER_CONNECT_TIMEOUT=${CHATGPT_BROWSER_CONNECT_TIMEOUT:-10}
+      - CHATGPT_BROWSER_PING_INTERVAL=${CHATGPT_BROWSER_PING_INTERVAL:-3}
+      - CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=${CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST:-1}
+      - CHATGPT_BROWSER_TARGET_BROWSER_ID=${CHATGPT_BROWSER_TARGET_BROWSER_ID:-}
+
   litellm:
     image: ghcr.io/berriai/litellm:main-latest
+    restart: always
+    depends_on:
+      - chatgpt-browser-proxy
     ports:
       - "4000:4000"
+    environment:
+      - AZURE_AI_FOUNDRY_API_KEY=${AZURE_AI_FOUNDRY_API_KEY}
+      - AZURE_AI_FOUNDRY_KIMI_API_BASE=${AZURE_AI_FOUNDRY_KIMI_API_BASE}
+      - AZURE_AI_FOUNDRY_NANO_API_BASE=${AZURE_AI_FOUNDRY_NANO_API_BASE}
+      - AZURE_AI_FOUNDRY_API_VERSION=${AZURE_AI_FOUNDRY_API_VERSION}
+      - AZURE_AI_API_KEY=${AZURE_AI_API_KEY}
+      - AZURE_AI_API_BASE=${AZURE_AI_API_BASE}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - ZAI_API_KEY=${ZAI_API_KEY}
+      - CHATGPT_BROWSER_API_BASE=${CHATGPT_BROWSER_API_BASE:-http://chatgpt-browser-proxy:8080/v1}
+      - CHATGPT_BROWSER_API_KEY=${CHATGPT_BROWSER_API_KEY:-sk-chatgpt-browser-local}
     volumes:
       - ./config.yaml:/app/config.yaml
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    command: [ "--config", "/app/config.yaml", "--port", "4000" ]

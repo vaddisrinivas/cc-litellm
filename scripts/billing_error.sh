@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Fired by Claude Code's StopFailure hook on billing/limit errors.
-# Patches settings.json, sets launchctl env, kills + relaunches Claude.
+# Patches Claude settings.json, then restarts Claude so only Claude Code uses
+# the local proxy. It intentionally does not set launchctl or shell env vars.
+
+set -euo pipefail
 
 CONFIG_HOME="${CC_LITELLM_HOME:-$HOME/.config/cc-litellm}"
 SETTINGS="$HOME/.claude/settings.json"
@@ -28,14 +31,19 @@ if [[ $? -ne 0 ]] || [[ "$RESULT" == *"gave up:true"* ]]; then
   exit 0
 fi
 
-log "approved — switching to Azure proxy (gpt-54-nano)"
+log "approved — switching Claude Code to local proxy"
 
-# 1. Patch settings.json — set proxy env + disable plugins (save state for revert)
+# 1. Patch settings.json — set proxy env + disable plugins/hooks that can
+# interfere while Claude is in fallback mode. Save state for revert.
 python3 - "$SETTINGS" "$MASTER_KEY" "$CONFIG_HOME" <<'EOF'
 import sys, json
+from pathlib import Path
 path, key, config_home = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path) as f:
-    cfg = json.load(f)
+settings_path = Path(path)
+if settings_path.exists():
+    cfg = json.loads(settings_path.read_text())
+else:
+    cfg = {}
 
 # Set proxy env
 env = cfg.setdefault("env", {})
@@ -47,48 +55,45 @@ env.update({
 
 # Save current plugin state, then disable all except cc-litellm
 plugins = cfg.get("enabledPlugins", {})
-with open(f"{config_home}/plugins_backup.json", "w") as f2:
-    json.dump(plugins, f2)
-for name in plugins:
-    if "cc-litellm" not in name:
-        plugins[name] = False
+if isinstance(plugins, dict):
+    backup_path = Path(config_home) / "plugins_backup.json"
+    if not backup_path.exists():
+        backup_path.write_text(json.dumps(plugins, indent=2) + "\n")
+    for name in plugins:
+        if "cc-litellm" not in name:
+            plugins[name] = False
 
 # Save current hooks state, then disable non-cc-litellm hooks
 hooks = cfg.get("hooks", {})
-hooks_backup = {}
-for event, entries in hooks.items():
-    hooks_backup[event] = []
-    for entry in entries:
-        is_litellm = any("session_start.sh" in h.get("command", "") or "billing_error.sh" in h.get("command", "")
-               for h in entry.get("hooks", []))
-        if not is_litellm:
-            hooks_backup[event].append(entry)
-with open(f"{config_home}/hooks_backup.json", "w") as f2:
-    json.dump(hooks_backup, f2)
-# Keep only cc-litellm hooks
-for event in hooks:
-    hooks[event] = [e for e in hooks[event]
-                    if any("cc-litellm" in h.get("command", "") for h in e.get("hooks", []))]
+if isinstance(hooks, dict):
+    def is_litellm(entry):
+        if not isinstance(entry, dict):
+            return False
+        return any(
+            "session_start.sh" in (h.get("command", "") or "")
+            or "billing_error.sh" in (h.get("command", "") or "")
+            for h in entry.get("hooks", [])
+            if isinstance(h, dict)
+        )
 
-with open(path, "w") as f:
+    hooks_backup = {}
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            continue
+        hooks_backup[event] = [entry for entry in entries if not is_litellm(entry)]
+        hooks[event] = [entry for entry in entries if is_litellm(entry)]
+
+    backup_path = Path(config_home) / "hooks_backup.json"
+    if not backup_path.exists():
+        backup_path.write_text(json.dumps(hooks_backup, indent=2) + "\n")
+
+with settings_path.open("w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
 EOF
 log "settings.json patched (proxy env + plugins disabled)"
 
-# 2. launchctl — belt-and-suspenders for GUI app env
-launchctl setenv ANTHROPIC_BASE_URL "http://localhost:4000"
-launchctl setenv ANTHROPIC_AUTH_TOKEN "$MASTER_KEY"
-log "launchctl setenv done"
-
-# 3. ~/.zshenv — CLI sessions
-ZSHENV="$HOME/.zshenv"
-grep -v 'ANTHROPIC_BASE_URL\|ANTHROPIC_AUTH_TOKEN\|ANTHROPIC_API_KEY\|# cc-litellm proxy' "$ZSHENV" 2>/dev/null > /tmp/zshenv_tmp || true
-printf '\n# cc-litellm proxy\nexport ANTHROPIC_BASE_URL=http://localhost:4000\nexport ANTHROPIC_AUTH_TOKEN=%s\n' "$MASTER_KEY" >> /tmp/zshenv_tmp
-mv /tmp/zshenv_tmp "$ZSHENV"
-log "~/.zshenv updated"
-
-# 4. Kill + relaunch Claude (new process loads updated settings.json)
+# 2. Kill + relaunch Claude (new process loads updated settings.json)
 log "killing Claude.app..."
 osascript -e 'tell application "Claude" to quit' 2>/dev/null || true
 sleep 1
@@ -98,7 +103,7 @@ sleep 1
 log "relaunching Claude.app..."
 open -a "Claude"
 
-# 5. Send "continue" after app opens
+# 3. Send "continue" after app opens
 sleep 4
 osascript <<'APPLESCRIPT'
 tell application "Claude" to activate
@@ -111,4 +116,4 @@ tell application "System Events"
 end tell
 APPLESCRIPT
 
-log "done — proxy=http://localhost:4000 model=gpt-54-nano"
+log "done — Claude Code proxy=http://localhost:4000"
