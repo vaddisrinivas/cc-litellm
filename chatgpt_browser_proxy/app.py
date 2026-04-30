@@ -33,6 +33,7 @@ DEFAULT_NEW_SESSION = os.getenv("CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST", "0").
     "false",
     "no",
 )
+COMPACT_EVERY = int(os.getenv("CHATGPT_BROWSER_COMPACT_EVERY", "30"))
 
 app = FastAPI(title="ChatGPT Browser OpenAI Proxy")
 app.add_middleware(
@@ -49,6 +50,9 @@ browser_counter = 0
 client_counter = 0
 state_lock = asyncio.Lock()
 ping_task: asyncio.Task[None] | None = None
+
+# session_id -> accumulated conversation state
+session_states: dict[str, dict[str, Any]] = {}
 
 
 def log(message: str) -> None:
@@ -87,21 +91,59 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _message_to_text(message: dict[str, Any]) -> tuple[str, list[str]]:
+    """Extract plain text and tool call blocks from a message."""
+    role = message.get("role", "user")
+    content = message.get("content")
+
+    # Handle structured tool calls in assistant messages
+    tool_blocks: list[str] = []
+    if role == "assistant" and isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    text_parts.append(str(item.get("text", "")))
+                elif item.get("type") in ("tool_use", "function_call"):
+                    # Anthropic/Codex format
+                    name = item.get("name", "")
+                    args = item.get("input") or item.get("arguments") or {}
+                    tool_blocks.append(
+                        json.dumps(
+                            {"tool_calls": [{"name": name, "arguments": args}]},
+                            ensure_ascii=False,
+                        )
+                    )
+                elif item.get("type") == "thinking":
+                    # Drop thinking blocks to save tokens
+                    pass
+            elif isinstance(item, str):
+                text_parts.append(item)
+        return "\n".join(part for part in text_parts if part), tool_blocks
+
+    return _content_to_text(content), tool_blocks
+
+
 def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for message in messages:
         role = message.get("role", "user")
-        content = _content_to_text(message.get("content"))
-        if not content:
+        text, tool_blocks = _message_to_text(message)
+        if not text and not tool_blocks:
             continue
+        prefix = role.capitalize()
         if role == "system":
-            parts.append(f"[System]\n{content}")
+            prefix = "System"
         elif role == "assistant":
-            parts.append(f"[Assistant]\n{content}")
+            prefix = "Assistant"
         elif role == "tool":
-            parts.append(f"[Tool result]\n{content}")
-        else:
-            parts.append(content)
+            prefix = "Tool result"
+        elif role == "function":
+            prefix = "Tool result"
+        body = text
+        if tool_blocks:
+            body = body + "\n" + "\n".join(tool_blocks) if body else "\n".join(tool_blocks)
+        parts.append(f"[{prefix}]\n{body}")
     return "\n\n".join(parts).strip()
 
 
@@ -118,21 +160,15 @@ def _normalize_tool(tool: dict[str, Any]) -> dict[str, Any]:
 
 
 def _request_extras_to_prompt(body: dict[str, Any]) -> str:
-    """Preserve optional OpenAI client contracts as plain prompt context.
-
-    Browser ChatGPT does not expose a real tool-call API to us. Passing these
-    fields through as explicit context is the honest compatibility fallback:
-    useful for advisory calls, not equivalent to native structured tool use.
-    """
+    """Preserve optional OpenAI client contracts as plain prompt context."""
     extras: list[str] = []
     if body.get("tools"):
         tool_choice = body.get("tool_choice", "auto")
         extras.append(
             "[Available tool schemas]\n"
-            "The caller supplied structured tool schemas. Tool calling is handled outside ChatGPT. "
-            "If a tool is needed, do not describe or simulate the result. Return only strict JSON in this shape:\n"
+            "If you need a tool, return ONLY strict JSON in this shape (no markdown, no comments):\n"
             '{"tool_calls":[{"name":"tool_name","arguments":{}}]}\n'
-            "If no tool is needed, answer normally. "
+            "If no tool is needed, answer normally.\n"
             f"tool_choice={json.dumps(tool_choice, ensure_ascii=False)}\n"
             f"{json.dumps([_normalize_tool(t) for t in body['tools']], ensure_ascii=False)}"
         )
@@ -150,6 +186,22 @@ def body_to_prompt(body: dict[str, Any]) -> str:
     if prompt and extras:
         return f"{extras}\n\n{prompt}"
     return prompt or extras
+
+
+def _compact_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Summarize old messages to keep context within token budget."""
+    if len(messages) <= 4:
+        return messages
+    # Keep first system msg, last 2 user/assistant exchanges, summarize the rest
+    result: list[dict[str, Any]] = []
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    if system_msgs:
+        result.append(system_msgs[0])
+    # Add a summary marker for dropped context
+    result.append({"role": "system", "content": "[Earlier conversation summarized; referring to previous context as needed]"})
+    # Keep last 3 full exchanges
+    result.extend(messages[-5:])
+    return result
 
 
 def _extract_json_object(text: str) -> dict[str, Any] | None:
@@ -171,12 +223,11 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 
 
 def parse_tool_calls(text: str) -> list[dict[str, Any]]:
+    """Extract tool calls from an explicit top-level {"tool_calls": [...]} envelope."""
     value = _extract_json_object(text)
-    if not value:
+    if not value or "tool_calls" not in value:
         return []
-    raw_calls = value.get("tool_calls") or value.get("tools") or []
-    if isinstance(value.get("name"), str):
-        raw_calls = [value]
+    raw_calls = value["tool_calls"]
     if not isinstance(raw_calls, list):
         return []
 
@@ -186,9 +237,9 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
             continue
         fn = raw.get("function") if isinstance(raw.get("function"), dict) else raw
         name = fn.get("name")
-        arguments = fn.get("arguments", {})
-        if not name:
+        if not name or not isinstance(name, str):
             continue
+        arguments = fn.get("arguments", {})
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments)
@@ -217,12 +268,7 @@ def _truthy(value: Any) -> bool:
 
 
 def _stable_session_id(request: Request, body: dict[str, Any]) -> str:
-    """Derive a stable browser session when Claude/LiteLLM omit one.
-
-    Claude Code sends large Responses API requests without our custom
-    session_id fields. Reusing one tab per caller/model/cwd-ish metadata keeps
-    multi-turn continuity without using OpenAI's `user` field as identity.
-    """
+    """Derive a stable browser session when Claude/LiteLLM omit one."""
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     seed = {
         "model": body.get("model", MODEL_NAME),
@@ -266,6 +312,90 @@ def _extract_session_controls(request: Request, body: dict[str, Any]) -> tuple[s
         session_id = f"browser-{uuid.uuid4().hex}"
 
     return session_id, new_session
+
+
+def _build_prompt_for_session(
+    session_id: str,
+    new_session: bool,
+    body: dict[str, Any],
+) -> tuple[str, bool]:
+    """Return prompt text and whether we should do a full reset."""
+    state = session_states.get(session_id)
+    all_messages: list[dict[str, Any]] = list(body.get("messages", []))
+
+    # Convert Responses API "input" to messages
+    raw_input = body.get("input")
+    if raw_input and not all_messages:
+        all_messages = raw_input if isinstance(raw_input, list) else [{"role": "user", "content": raw_input}]
+
+    extras = _request_extras_to_prompt(body)
+
+    if new_session or state is None:
+        # First request: send full history once
+        prompt = messages_to_prompt(all_messages)
+        if extras and prompt:
+            prompt = f"{extras}\n\n{prompt}"
+        elif extras:
+            prompt = extras
+        session_states[session_id] = {
+            "messages": list(all_messages),
+            "turn_count": 1,
+            "last_responses": [],
+        }
+        log(f"session {session_id[:20]}... full history ({len(prompt)} chars, {len(all_messages)} msgs)")
+        return prompt, True
+
+    # Delta: figure out what changed since last request
+    prev_messages: list[dict[str, Any]] = state["messages"]
+    prev_len = len(prev_messages)
+
+    # Append assistant responses from prior turn if any
+    prev_responses: list[str] = state.get("last_responses", [])
+    for resp in prev_responses:
+        prev_messages = prev_messages + [{"role": "assistant", "content": resp}]
+
+    # New messages are anything after what we've seen
+    if len(all_messages) > prev_len:
+        new_messages = all_messages[prev_len:]
+    else:
+        # Claude sometimes regenerates the full history; diff by content hash
+        seen_hashes = {_msg_hash(m) for m in prev_messages}
+        new_messages = [m for m in all_messages if _msg_hash(m) not in seen_hashes]
+
+    # Compaction check
+    turn_count = state.get("turn_count", 1) + 1
+    needs_compact = turn_count >= COMPACT_EVERY
+
+    if needs_compact:
+        compacted_messages = _compact_messages(all_messages)
+        session_states[session_id]["messages"] = list(compacted_messages)
+        session_states[session_id]["turn_count"] = 0
+        prompt = messages_to_prompt(compacted_messages)
+        log(f"session {session_id[:20]}... COMPACT + {len(new_messages)} new msgs ({len(prompt)} chars)")
+    else:
+        session_states[session_id]["turn_count"] = turn_count
+        if new_messages:
+            session_states[session_id]["messages"].extend(new_messages)
+        # For delta, send just the extras + new messages as context
+        delta_prompt = messages_to_prompt(new_messages) if new_messages else "Continue."
+        if extras:
+            delta_prompt = f"{extras}\n\n{delta_prompt}"
+        prompt = delta_prompt
+        log(f"session {session_id[:20]}... delta {len(new_messages)} new msgs ({len(prompt)} chars)")
+
+    return prompt, False
+
+
+def _msg_hash(msg: dict[str, Any]) -> str:
+    """Stable hash for deduplicating messages."""
+    return hashlib.sha256(json.dumps(msg, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _store_response(session_id: str, response_text: str) -> None:
+    state = session_states.get(session_id)
+    if state is not None:
+        state["last_responses"] = [response_text]
+        state["messages"].append({"role": "assistant", "content": response_text})
 
 
 async def _recv_json(ws: Any, timeout: float) -> dict[str, Any]:
@@ -473,6 +603,7 @@ async def health() -> dict[str, Any]:
         "auth_enabled": bool(API_KEY),
         "connected_browsers": sorted(browser_clients),
         "pending_requests": len(pending_responses),
+        "active_sessions": len(session_states),
     }
 
 
@@ -592,25 +723,45 @@ async def models(request: Request) -> JSONResponse:
     )
 
 
-async def _chat_completions_impl(request: Request):
+async def _handle_request(request: Request, body: dict[str, Any], is_responses_api: bool) -> dict[str, Any]:
+    """Core request handling with session tracking."""
     if not _auth_ok(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    body = await request.json()
-    model = body.get("model", MODEL_NAME)
     try:
-        prompt = body_to_prompt(body)
         session_id, new_session = _extract_session_controls(request, body)
     except Exception as exc:
         raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
+
+    try:
+        prompt, do_new_session = _build_prompt_for_session(session_id, new_session, body)
+    except Exception as exc:
+        raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
+    return {
+        "prompt": prompt,
+        "session_id": session_id,
+        "new_session": do_new_session,
+    }
+
+
+async def _chat_completions_impl(request: Request):
+    body = await request.json()
+    model = body.get("model", MODEL_NAME)
+
+    req_info = await _handle_request(request, body, is_responses_api=False)
+    prompt = req_info["prompt"]
+    session_id = req_info["session_id"]
+    do_new_session = req_info["new_session"]
+
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
     try:
-        response_text = clean_response_text(await query_chatgpt(prompt, session_id, new_session))
+        response_text = clean_response_text(await query_chatgpt(prompt, session_id, do_new_session))
     except Exception as exc:
         raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
 
+    _store_response(session_id, response_text)
     tool_calls = parse_tool_calls(response_text) if body.get("tools") else []
 
     if body.get("stream", False):
@@ -702,32 +853,22 @@ async def chat_completions_without_v1(request: Request):
 
 @app.post("/v1/responses", response_model=None)
 async def responses(request: Request):
-    if not _auth_ok(request):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
     body = await request.json()
-    try:
-        raw_input = body.get("input", "")
-        input_body: dict[str, Any] = {
-            "messages": raw_input if isinstance(raw_input, list) else [{"role": "user", "content": raw_input}]
-        }
-        if body.get("tools"):
-            input_body["tools"] = body["tools"]
-            input_body["tool_choice"] = body.get("tool_choice", "auto")
-        if body.get("response_format"):
-            input_body["response_format"] = body["response_format"]
-        prompt = body_to_prompt(input_body)
-        session_id, new_session = _extract_session_controls(request, body)
-    except Exception as exc:
-        raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
+
+    req_info = await _handle_request(request, body, is_responses_api=True)
+    prompt = req_info["prompt"]
+    session_id = req_info["session_id"]
+    do_new_session = req_info["new_session"]
+
     created = int(time.time())
     response_id = f"resp_{uuid.uuid4().hex}"
 
     try:
-        response_text = clean_response_text(await query_chatgpt(prompt, session_id, new_session))
+        response_text = clean_response_text(await query_chatgpt(prompt, session_id, do_new_session))
     except Exception as exc:
         raise HTTPException(status_code=_status_for_exception(exc), detail=str(exc)) from exc
 
+    _store_response(session_id, response_text)
     tool_calls = parse_tool_calls(response_text) if body.get("tools") else []
 
     if body.get("stream", False):

@@ -11,6 +11,7 @@ def reset_state(monkeypatch):
     proxy.browser_clients.clear()
     proxy.browser_locks.clear()
     proxy.pending_responses.clear()
+    proxy.session_states.clear()
     monkeypatch.setattr(proxy, "API_KEY", "test-key")
     monkeypatch.setattr(proxy, "DEFAULT_NEW_SESSION", False)
     yield
@@ -116,9 +117,86 @@ def test_missing_session_uses_stable_derived_id(client, monkeypatch):
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert seen[0] == seen[1]
+    assert seen[0][0] == seen[1][0]
     assert seen[0][0].startswith("browser-stable-")
-    assert seen[0][1] is False
+    assert seen[0][1] is True
+    assert seen[1][1] is False
+
+
+def test_session_delta_sends_only_new_messages(client, monkeypatch):
+    prompts = []
+
+    async def fake_query(prompt, session_id, new_session):
+        prompts.append((prompt, new_session))
+        return "ok"
+
+    monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
+    session_id = "delta-session"
+    first_messages = [
+        {"role": "user", "content": "first message"},
+    ]
+    second_messages = [
+        {"role": "user", "content": "first message"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "second message"},
+    ]
+
+    first = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "chatgpt-browser", "session_id": session_id, "messages": first_messages},
+    )
+    second = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={"model": "chatgpt-browser", "session_id": session_id, "messages": second_messages},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert "first message" in prompts[0][0]
+    assert prompts[0][1] is True
+    assert "second message" in prompts[1][0]
+    assert "first message" not in prompts[1][0]
+    assert prompts[1][1] is False
+
+
+def test_session_compaction_does_not_duplicate_new_message(client, monkeypatch):
+    prompts = []
+
+    async def fake_query(prompt, session_id, new_session):
+        prompts.append(prompt)
+        return "ok"
+
+    monkeypatch.setattr(proxy, "COMPACT_EVERY", 2)
+    monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
+    session_id = "compact-session"
+
+    client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={
+            "model": "chatgpt-browser",
+            "session_id": session_id,
+            "messages": [{"role": "user", "content": "first message"}],
+        },
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={
+            "model": "chatgpt-browser",
+            "session_id": session_id,
+            "messages": [
+                {"role": "user", "content": "first message"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "second message"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert prompts[1].count("second message") == 1
 
 
 def test_chat_completion_returns_tool_calls(client, monkeypatch):

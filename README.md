@@ -69,6 +69,7 @@ CHATGPT_BROWSER_WS_TOKEN=gemini-coder-vscode
 CHATGPT_BROWSER_EXTENSION_WS_TOKEN=gemini-coder
 CHATGPT_BROWSER_PING_INTERVAL=10
 CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=0
+CHATGPT_BROWSER_COMPACT_EVERY=30
 ```
 
 `LITELLM_MASTER_KEY` can be any local token. Claude uses it as
@@ -135,6 +136,9 @@ Session behavior:
 - To force a fresh ChatGPT tab, pass `new_session: true` or
   `X-New-Session: true`. To make every request fresh, set
   `CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=1`.
+- The proxy sends full history only on the first request for a browser session.
+  Later requests send only new messages; every `CHATGPT_BROWSER_COMPACT_EVERY`
+  turns it refreshes the browser prompt with compacted context.
 - Streaming is OpenAI-compatible but currently emitted after the browser
   response completes; token-level streaming depends on deeper ChatGPT DOM
   streaming support.

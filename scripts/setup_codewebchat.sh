@@ -36,6 +36,11 @@ else
   git -C "$CODEWEBCHAT_HOME" pull --ff-only
 fi
 
+CHATGPT_ADAPTER="$CODEWEBCHAT_HOME/apps/browser/src/content-scripts/send-prompt-content-script/chatbots/chatgpt.ts"
+if [[ -f "$CHATGPT_ADAPTER" ]]; then
+  perl -0pi -e 's/if \(!copy_button\) \{\n\s*report_initialization_error\(\{\n\s*function_name: '\''chatgpt\.perform_copy'\'',\n\s*log_message: '\''Copy button not found'\''\n\s*\}\)\n\s*return\n\s*\}\n\s*copy_button\.click\(\)/copy_button?.click()/s' "$CHATGPT_ADAPTER"
+fi
+
 cd "$CODEWEBCHAT_HOME"
 "${PNPM[@]}" install
 "${PNPM[@]}" --dir apps/browser build
