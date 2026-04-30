@@ -10,6 +10,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -34,6 +35,7 @@ DEFAULT_NEW_SESSION = os.getenv("CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST", "0").
     "no",
 )
 COMPACT_EVERY = int(os.getenv("CHATGPT_BROWSER_COMPACT_EVERY", "30"))
+SESSION_STATE_PATH = os.getenv("CHATGPT_BROWSER_SESSION_STATE_PATH", "/data/session_state.json")
 
 app = FastAPI(title="ChatGPT Browser OpenAI Proxy")
 app.add_middleware(
@@ -64,6 +66,34 @@ def _auth_ok(request: Request) -> bool:
         return True
     header = request.headers.get("authorization", "")
     return header == f"Bearer {API_KEY}"
+
+
+def _load_session_states() -> None:
+    path = Path(SESSION_STATE_PATH)
+    if not path.exists():
+        return
+    try:
+        value = json.loads(path.read_text())
+        states = value.get("sessions", value) if isinstance(value, dict) else {}
+        if isinstance(states, dict):
+            session_states.clear()
+            session_states.update({str(k): v for k, v in states.items() if isinstance(v, dict)})
+            log(f"loaded {len(session_states)} persisted sessions from {path}")
+    except Exception as exc:
+        log(f"failed to load session state from {path}: {exc}")
+
+
+def _save_session_states() -> None:
+    if not SESSION_STATE_PATH:
+        return
+    path = Path(SESSION_STATE_PATH)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps({"sessions": session_states}, ensure_ascii=False))
+        tmp.replace(path)
+    except Exception as exc:
+        log(f"failed to save session state to {path}: {exc}")
 
 
 class UnsupportedRequestError(ValueError):
@@ -164,11 +194,20 @@ def _request_extras_to_prompt(body: dict[str, Any]) -> str:
     extras: list[str] = []
     if body.get("tools"):
         tool_choice = body.get("tool_choice", "auto")
+        tool_choice_required = tool_choice == "required" or (
+            isinstance(tool_choice, dict) and tool_choice.get("type") in {"function", "tool"}
+        )
+        required_text = (
+            "The caller requires a tool call. Return exactly one tool call and no prose.\n"
+            if tool_choice_required
+            else "If a tool is needed, return a tool call and no prose. If no tool is needed, answer normally.\n"
+        )
         extras.append(
-            "[Available tool schemas]\n"
-            "If you need a tool, return ONLY strict JSON in this shape (no markdown, no comments):\n"
+            "[Tool call contract - highest priority]\n"
+            f"{required_text}"
+            "Never execute, simulate, or describe tool results yourself.\n"
+            "Return ONLY strict JSON in this exact shape when calling tools (no markdown, no comments):\n"
             '{"tool_calls":[{"name":"tool_name","arguments":{}}]}\n'
-            "If no tool is needed, answer normally.\n"
             f"tool_choice={json.dumps(tool_choice, ensure_ascii=False)}\n"
             f"{json.dumps([_normalize_tool(t) for t in body['tools']], ensure_ascii=False)}"
         )
@@ -256,7 +295,7 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
 
 
 def clean_response_text(text: str) -> str:
-    return re.sub(r"^\s*Thought for (?:a second|\d+ seconds?)\s*", "", text).strip()
+    return re.sub(r"^\s*Thought for (?:a second|a couple of seconds|a few seconds|\d+ seconds?)\s*", "", text).strip()
 
 
 def _truthy(value: Any) -> bool:
@@ -334,7 +373,7 @@ def _build_prompt_for_session(
         # First request: send full history once
         prompt = messages_to_prompt(all_messages)
         if extras and prompt:
-            prompt = f"{extras}\n\n{prompt}"
+            prompt = f"{prompt}\n\n{extras}"
         elif extras:
             prompt = extras
         session_states[session_id] = {
@@ -342,6 +381,7 @@ def _build_prompt_for_session(
             "turn_count": 1,
             "last_responses": [],
         }
+        _save_session_states()
         log(f"session {session_id[:20]}... full history ({len(prompt)} chars, {len(all_messages)} msgs)")
         return prompt, True
 
@@ -371,6 +411,9 @@ def _build_prompt_for_session(
         session_states[session_id]["messages"] = list(compacted_messages)
         session_states[session_id]["turn_count"] = 0
         prompt = messages_to_prompt(compacted_messages)
+        if extras:
+            prompt = f"{prompt}\n\n{extras}"
+        _save_session_states()
         log(f"session {session_id[:20]}... COMPACT + {len(new_messages)} new msgs ({len(prompt)} chars)")
     else:
         session_states[session_id]["turn_count"] = turn_count
@@ -379,8 +422,9 @@ def _build_prompt_for_session(
         # For delta, send just the extras + new messages as context
         delta_prompt = messages_to_prompt(new_messages) if new_messages else "Continue."
         if extras:
-            delta_prompt = f"{extras}\n\n{delta_prompt}"
+            delta_prompt = f"{delta_prompt}\n\n{extras}"
         prompt = delta_prompt
+        _save_session_states()
         log(f"session {session_id[:20]}... delta {len(new_messages)} new msgs ({len(prompt)} chars)")
 
     return prompt, False
@@ -396,6 +440,7 @@ def _store_response(session_id: str, response_text: str) -> None:
     if state is not None:
         state["last_responses"] = [response_text]
         state["messages"].append({"role": "assistant", "content": response_text})
+        _save_session_states()
 
 
 async def _recv_json(ws: Any, timeout: float) -> dict[str, Any]:
@@ -620,6 +665,7 @@ async def ready() -> dict[str, Any]:
 @app.on_event("startup")
 async def startup() -> None:
     global ping_task
+    _load_session_states()
     if ping_task is None:
         ping_task = asyncio.create_task(_ping_browsers())
 
@@ -627,6 +673,7 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     global ping_task
+    _save_session_states()
     if ping_task is not None:
         ping_task.cancel()
         ping_task = None

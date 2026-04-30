@@ -70,6 +70,7 @@ CHATGPT_BROWSER_EXTENSION_WS_TOKEN=gemini-coder
 CHATGPT_BROWSER_PING_INTERVAL=10
 CHATGPT_BROWSER_NEW_SESSION_PER_REQUEST=0
 CHATGPT_BROWSER_COMPACT_EVERY=30
+CHATGPT_BROWSER_SESSION_STATE_PATH=/data/session_state.json
 ```
 
 `LITELLM_MASTER_KEY` can be any local token. Claude uses it as
@@ -139,6 +140,9 @@ Session behavior:
 - The proxy sends full history only on the first request for a browser session.
   Later requests send only new messages; every `CHATGPT_BROWSER_COMPACT_EVERY`
   turns it refreshes the browser prompt with compacted context.
+- Session history is persisted in the `chatgpt_browser_state` Docker volume at
+  `CHATGPT_BROWSER_SESSION_STATE_PATH`, so derived browser sessions survive
+  container restarts.
 - Streaming is OpenAI-compatible but currently emitted after the browser
   response completes; token-level streaming depends on deeper ChatGPT DOM
   streaming support.

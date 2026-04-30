@@ -7,13 +7,14 @@ import app as proxy
 
 
 @pytest.fixture(autouse=True)
-def reset_state(monkeypatch):
+def reset_state(monkeypatch, tmp_path):
     proxy.browser_clients.clear()
     proxy.browser_locks.clear()
     proxy.pending_responses.clear()
     proxy.session_states.clear()
     monkeypatch.setattr(proxy, "API_KEY", "test-key")
     monkeypatch.setattr(proxy, "DEFAULT_NEW_SESSION", False)
+    monkeypatch.setattr(proxy, "SESSION_STATE_PATH", str(tmp_path / "session_state.json"))
     yield
 
 
@@ -68,6 +69,20 @@ def test_body_to_prompt_adds_tool_call_contract():
     assert "weather?" in prompt
 
 
+def test_tool_contract_trails_messages_for_browser_attention():
+    prompt, _ = proxy._build_prompt_for_session(
+        "tool-contract-session",
+        False,
+        {
+            "messages": [{"role": "user", "content": "run pwd"}],
+            "tool_choice": "required",
+            "tools": [{"type": "function", "function": {"name": "Bash", "parameters": {"type": "object"}}}],
+        },
+    )
+    assert prompt.rfind("[Tool call contract - highest priority]") > prompt.rfind("run pwd")
+    assert "Return exactly one tool call and no prose" in prompt
+
+
 def test_parse_tool_calls_from_fenced_json():
     calls = proxy.parse_tool_calls(
         '```json\n{"tool_calls":[{"name":"Bash","arguments":{"command":"pwd"}}]}\n```'
@@ -79,6 +94,27 @@ def test_parse_tool_calls_from_fenced_json():
 def test_clean_response_text_removes_chatgpt_ui_artifact():
     assert proxy.clean_response_text("Thought for a secondexact-ok") == "exact-ok"
     assert proxy.clean_response_text(" Thought for 3 seconds\nexact-ok ") == "exact-ok"
+    assert proxy.clean_response_text("Thought for a couple of secondsdone") == "done"
+
+
+def test_session_state_persists_to_disk(client, monkeypatch):
+    async def fake_query(prompt, session_id, new_session):
+        return "persisted-ok"
+
+    monkeypatch.setattr(proxy, "query_chatgpt", fake_query)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=auth(),
+        json={
+            "model": "chatgpt-browser",
+            "session_id": "persist-session",
+            "messages": [{"role": "user", "content": "remember me"}],
+        },
+    )
+    assert response.status_code == 200
+    proxy.session_states.clear()
+    proxy._load_session_states()
+    assert proxy.session_states["persist-session"]["messages"][-1]["content"] == "persisted-ok"
 
 
 def test_user_field_is_not_session_id(client, monkeypatch):
